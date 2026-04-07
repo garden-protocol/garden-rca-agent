@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     repo_solana_executor: str = "/opt/repos/solana-executor"
     repo_solana_watcher: str = "/opt/repos/solana-watcher"
     repo_solana_relayer: str = "/opt/repos/solana-relayer"
-    repo_solana_htlc: str = "/opt/repos/solana-htlc"
+    repo_solana_native_swaps: str = "/opt/repos/solana-native-swaps"
+    repo_solana_spl_swaps: str = "/opt/repos/solana-spl-swaps"
 
     # Spark repo paths (single executor service for now)
     repo_spark: str = "/opt/repos/spark-executor"
@@ -54,7 +55,8 @@ class Settings(BaseSettings):
     branch_solana_executor: str = "staging"
     branch_solana_watcher: str = "staging"
     branch_solana_relayer: str = "staging"
-    branch_solana_htlc: str = "staging"
+    branch_solana_native_swaps: str = "dev"
+    branch_solana_spl_swaps: str = "dev"
     branch_spark: str = "staging"
 
     # Bitcoin RPC
@@ -96,7 +98,8 @@ class Settings(BaseSettings):
                 "executor": self.branch_solana_executor,
                 "watcher": self.branch_solana_watcher,
                 "relayer": self.branch_solana_relayer,
-                "htlc": self.branch_solana_htlc,
+                "native_swaps": self.branch_solana_native_swaps,
+                "spl_swaps": self.branch_solana_spl_swaps,
             },
             "spark": {
                 "executor": self.branch_spark,
@@ -125,7 +128,8 @@ class Settings(BaseSettings):
                 "executor": self.repo_solana_executor,
                 "watcher": self.repo_solana_watcher,
                 "relayer": self.repo_solana_relayer,
-                "htlc": self.repo_solana_htlc,
+                "native_swaps": self.repo_solana_native_swaps,
+                "spl_swaps": self.repo_solana_spl_swaps,
             },
             "spark": {
                 "executor": self.repo_spark,
