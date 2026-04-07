@@ -4,6 +4,7 @@ from agents.specialists.base import BaseSpecialist
 
 
 _PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "bitcoin_specialist.txt"
+_HTLC_PATH = Path(__file__).parent.parent.parent / "knowledge" / "bitcoin_htlc.md"
 
 
 class BitcoinSpecialist(BaseSpecialist):
@@ -14,9 +15,11 @@ class BitcoinSpecialist(BaseSpecialist):
 
     @property
     def system_prompt(self) -> str:
-        if _PROMPT_PATH.exists():
-            return _PROMPT_PATH.read_text(encoding="utf-8")
-        return _DEFAULT_PROMPT
+        base = _PROMPT_PATH.read_text(encoding="utf-8") if _PROMPT_PATH.exists() else _DEFAULT_PROMPT
+        htlc = _HTLC_PATH.read_text(encoding="utf-8") if _HTLC_PATH.exists() else ""
+        if htlc:
+            base += f"\n\n{htlc}"
+        return base
 
 
 _DEFAULT_PROMPT = """\

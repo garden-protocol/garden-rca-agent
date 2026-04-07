@@ -1,6 +1,9 @@
 """
 File-system tools for reading repos. Used by chain specialist agents.
-All paths are sandboxed to the chain's repo root from config.
+All paths are sandboxed to the chain's component repo root from config.
+
+Each chain has multiple component repos (executor, watcher, relayer, htlc).
+Tools accept an optional `repo` parameter to select which component repo to use.
 """
 import os
 import subprocess
@@ -17,6 +20,18 @@ SKIP_EXTENSIONS = {
 }
 
 
+def _resolve_repo_root(chain: str, repo: str) -> str:
+    """
+    Resolve the filesystem path for a chain + component repo name.
+    Raises KeyError if the component name is unknown for this chain.
+    """
+    paths = settings.repo_paths(chain)
+    if repo not in paths:
+        available = ", ".join(paths.keys())
+        raise KeyError(f"Unknown repo '{repo}' for chain '{chain}'. Available: {available}")
+    return paths[repo]
+
+
 def _safe_path(repo_root: str, relative_path: str) -> str:
     """Resolve and validate that path stays within repo root."""
     full = os.path.realpath(os.path.join(repo_root, relative_path))
@@ -26,18 +41,22 @@ def _safe_path(repo_root: str, relative_path: str) -> str:
     return full
 
 
-def read_file(chain: str, path: str) -> str:
+def read_file(chain: str, path: str, repo: str = "executor") -> str:
     """
-    Read a file from the chain's repo.
+    Read a file from a specific component repo for the chain.
 
     Args:
         chain: Chain name (bitcoin, evm, solana, spark)
         path: Relative path from repo root
+        repo: Component repo name (executor, watcher, relayer, htlc, etc.)
 
     Returns:
         File contents as string (truncated to 8000 chars if very large)
     """
-    repo_root = settings.repo_path(chain)
+    try:
+        repo_root = _resolve_repo_root(chain, repo)
+    except KeyError as e:
+        return f"[{e}]"
     try:
         full_path = _safe_path(repo_root, path)
         with open(full_path, "r", encoding="utf-8", errors="replace") as f:
@@ -46,25 +65,29 @@ def read_file(chain: str, path: str) -> str:
             content = content[:8000] + f"\n\n[... truncated, file is {len(content)} chars total ...]"
         return content
     except FileNotFoundError:
-        return f"[File not found: {path}]"
+        return f"[File not found: {repo}/{path}]"
     except Exception as e:
-        return f"[Error reading {path}: {e}]"
+        return f"[Error reading {repo}/{path}: {e}]"
 
 
-def grep_repo(chain: str, pattern: str, directory: str = ".", context_lines: int = 3) -> str:
+def grep_repo(chain: str, pattern: str, directory: str = ".", context_lines: int = 3, repo: str = "executor") -> str:
     """
-    Search the repo for a pattern using ripgrep (falls back to grep).
+    Search a component repo for a pattern using ripgrep (falls back to grep).
 
     Args:
         chain: Chain name
         pattern: Regex or literal pattern to search for
         directory: Subdirectory to search within (relative to repo root)
         context_lines: Lines of context to show around each match
+        repo: Component repo name (executor, watcher, relayer, htlc, etc.)
 
     Returns:
         Matching lines with context, formatted as string
     """
-    repo_root = settings.repo_path(chain)
+    try:
+        repo_root = _resolve_repo_root(chain, repo)
+    except KeyError as e:
+        return f"[{e}]"
     try:
         search_dir = _safe_path(repo_root, directory)
     except ValueError as e:
@@ -94,19 +117,23 @@ def grep_repo(chain: str, pattern: str, directory: str = ".", context_lines: int
     return "[grep/rg not available]"
 
 
-def list_directory(chain: str, path: str = ".", max_depth: int = 3) -> str:
+def list_directory(chain: str, path: str = ".", max_depth: int = 3, repo: str = "executor") -> str:
     """
-    List directory tree of the repo (skipping vendor/generated dirs).
+    List directory tree of a component repo (skipping vendor/generated dirs).
 
     Args:
         chain: Chain name
         path: Relative path from repo root to list
         max_depth: Max depth to recurse (default 3)
+        repo: Component repo name (executor, watcher, relayer, htlc, etc.)
 
     Returns:
         Tree-style directory listing as string
     """
-    repo_root = settings.repo_path(chain)
+    try:
+        repo_root = _resolve_repo_root(chain, repo)
+    except KeyError as e:
+        return f"[{e}]"
     try:
         start = _safe_path(repo_root, path)
     except ValueError as e:
@@ -143,93 +170,126 @@ def list_directory(chain: str, path: str = ".", max_depth: int = 3) -> str:
     return result if result else "[Empty directory]"
 
 
-# Tool definitions for Claude
-REPO_TOOL_DEFINITIONS = [
-    {
-        "name": "read_file",
-        "description": (
-            "Read a source file from the chain's repository. "
-            "Use this to inspect specific files the specialist needs to understand. "
-            "Path is relative to the repo root."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Relative path from repo root, e.g. 'executor/init.go'",
+def build_repo_tool_definitions(chain: str) -> list[dict]:
+    """
+    Build repo tool definitions for a specific chain, including the available
+    repo component names in the tool descriptions so the agent knows what to pass.
+    """
+    try:
+        available_repos = list(settings.repo_paths(chain).keys())
+        repo_desc = f"Component repo to use. Available for {chain}: {available_repos}. Default: 'executor'."
+    except KeyError:
+        repo_desc = "Component repo name (e.g. executor, watcher, relayer, htlc). Default: 'executor'."
+
+    return [
+        {
+            "name": "read_file",
+            "description": (
+                "Read a source file from a component repo of this chain. "
+                "Use this to inspect specific files the specialist needs to understand. "
+                "Path is relative to the component repo root. "
+                f"Specify 'repo' to target a specific component ({', '.join(available_repos)})."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path from repo root, e.g. 'executor/init.go'",
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": repo_desc,
+                        "default": "executor",
+                    },
                 },
-            },
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "grep_repo",
-        "description": (
-            "Search the repo for a pattern. Returns matching lines with context. "
-            "Useful for finding error handling, function definitions, or specific log messages."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Regex or literal string pattern to search for",
-                },
-                "directory": {
-                    "type": "string",
-                    "description": "Subdirectory to search in (default: '.' = whole repo)",
-                    "default": ".",
-                },
-                "context_lines": {
-                    "type": "integer",
-                    "description": "Lines of context around each match (default 3)",
-                    "default": 3,
-                },
-            },
-            "required": ["pattern"],
-        },
-    },
-    {
-        "name": "list_directory",
-        "description": (
-            "List the directory tree of the repo or a subdirectory. "
-            "Use this first to understand the repo structure before reading files."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Relative path to list (default: '.' = repo root)",
-                    "default": ".",
-                },
-                "max_depth": {
-                    "type": "integer",
-                    "description": "Max directory depth to show (default 3)",
-                    "default": 3,
-                },
+                "required": ["path"],
             },
         },
-    },
-]
+        {
+            "name": "grep_repo",
+            "description": (
+                "Search a component repo for a pattern. Returns matching lines with context. "
+                "Useful for finding error handling, function definitions, or specific log messages. "
+                f"Specify 'repo' to target a specific component ({', '.join(available_repos)})."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex or literal string pattern to search for",
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "Subdirectory to search in (default: '.' = whole repo)",
+                        "default": ".",
+                    },
+                    "context_lines": {
+                        "type": "integer",
+                        "description": "Lines of context around each match (default 3)",
+                        "default": 3,
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": repo_desc,
+                        "default": "executor",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+        {
+            "name": "list_directory",
+            "description": (
+                "List the directory tree of a component repo or a subdirectory. "
+                "Use this first to understand the repo structure before reading files. "
+                f"Specify 'repo' to target a specific component ({', '.join(available_repos)})."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to list (default: '.' = repo root)",
+                        "default": ".",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Max directory depth to show (default 3)",
+                        "default": 3,
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": repo_desc,
+                        "default": "executor",
+                    },
+                },
+            },
+        },
+    ]
+
+
 
 
 def execute_repo_tool(chain: str, tool_name: str, tool_input: dict) -> str:
     """Execute a repo tool call for the given chain."""
+    repo = tool_input.get("repo", "executor")
     if tool_name == "read_file":
-        return read_file(chain, tool_input["path"])
+        return read_file(chain, tool_input["path"], repo)
     elif tool_name == "grep_repo":
         return grep_repo(
             chain,
             tool_input["pattern"],
             tool_input.get("directory", "."),
             tool_input.get("context_lines", 3),
+            repo,
         )
     elif tool_name == "list_directory":
         return list_directory(
             chain,
             tool_input.get("path", "."),
             tool_input.get("max_depth", 3),
+            repo,
         )
     return f"[Unknown repo tool: {tool_name}]"

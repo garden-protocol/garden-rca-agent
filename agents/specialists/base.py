@@ -8,13 +8,14 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from models.alert import Alert
-from tools.repo import REPO_TOOL_DEFINITIONS, execute_repo_tool
+from tools.repo import build_repo_tool_definitions, execute_repo_tool
 
 
 MODEL = "claude-opus-4-6"
 KNOWLEDGE_DIR = Path(__file__).parent.parent.parent / "knowledge"
 
-client = anthropic.Anthropic()
+from config import settings as _settings
+client = anthropic.Anthropic(api_key=_settings.anthropic_api_key)
 
 
 class BaseSpecialist(ABC):
@@ -115,6 +116,7 @@ class BaseSpecialist(ABC):
 
         messages = [{"role": "user", "content": user_message}]
         chain = self.chain  # capture for closure in tool execution
+        tool_defs = build_repo_tool_definitions(chain)
 
         # Agentic loop with repo tools
         while True:
@@ -124,7 +126,7 @@ class BaseSpecialist(ABC):
                 thinking={"type": "adaptive"},
                 output_config={"effort": "high"},
                 system=self._build_system(),
-                tools=REPO_TOOL_DEFINITIONS,
+                tools=tool_defs,
                 messages=messages,
             )
 

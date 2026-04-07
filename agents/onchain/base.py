@@ -8,7 +8,8 @@ from abc import ABC, abstractmethod
 
 MODEL = "claude-haiku-4-5-20251001"
 
-client = anthropic.Anthropic()
+from config import settings as _settings
+client = anthropic.Anthropic(api_key=_settings.anthropic_api_key)
 
 
 class BaseOnChainAgent(ABC):

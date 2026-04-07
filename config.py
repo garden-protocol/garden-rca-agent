@@ -1,8 +1,11 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ENV_FILE = Path(__file__).parent / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore")
 
     # Anthropic
     anthropic_api_key: str
@@ -15,11 +18,44 @@ class Settings(BaseSettings):
     grafana_url: str = ""
     grafana_api_key: str = ""
 
-    # Repo paths
-    repo_bitcoin: str = "/opt/repos/bitcoin-executor"
-    repo_evm: str = "/opt/repos/evm-executor"
-    repo_solana: str = "/opt/repos/solana-executor"
+    # Bitcoin repo paths
+    # Bitcoin has two watchers: cobi (order event watcher) and zmq (mempool/block watcher)
+    repo_bitcoin_executor: str = "/opt/repos/bitcoin-executor"
+    repo_bitcoin_watcher_cobi: str = "/opt/repos/bitcoin-watcher-cobi"
+    repo_bitcoin_watcher_zmq: str = "/opt/repos/bitcoin-watcher-zmq"
+    repo_bitcoin_relayer: str = "/opt/repos/bitcoin-relayer"
+    # Note: Bitcoin HTLC is a static Tapscript (no repo) — stored at knowledge/bitcoin_htlc.rs
+
+    # EVM repo paths
+    repo_evm_executor: str = "/opt/repos/evm-executor"
+    repo_evm_watcher: str = "/opt/repos/evm-watcher"
+    repo_evm_relayer: str = "/opt/repos/evm-relayer"
+    repo_evm_htlc: str = "/opt/repos/evm-htlc"
+
+    # Solana repo paths
+    repo_solana_executor: str = "/opt/repos/solana-executor"
+    repo_solana_watcher: str = "/opt/repos/solana-watcher"
+    repo_solana_relayer: str = "/opt/repos/solana-relayer"
+    repo_solana_htlc: str = "/opt/repos/solana-htlc"
+
+    # Spark repo paths (single executor service for now)
     repo_spark: str = "/opt/repos/spark-executor"
+
+    # Branch overrides per component (default: "staging")
+    # Only set these when a component uses a different branch than staging
+    branch_bitcoin_executor: str = "staging"
+    branch_bitcoin_watcher_cobi: str = "staging"
+    branch_bitcoin_watcher_zmq: str = "feat/rollout2"
+    branch_bitcoin_relayer: str = "staging"
+    branch_evm_executor: str = "staging"
+    branch_evm_watcher: str = "staging"
+    branch_evm_relayer: str = "staging"
+    branch_evm_htlc: str = "staging"
+    branch_solana_executor: str = "staging"
+    branch_solana_watcher: str = "staging"
+    branch_solana_relayer: str = "staging"
+    branch_solana_htlc: str = "staging"
+    branch_spark: str = "staging"
 
     # Bitcoin RPC
     bitcoin_rpc_url: str = ""
@@ -38,13 +74,70 @@ class Settings(BaseSettings):
     # Server
     port: int = 8000
 
-    def repo_path(self, chain: str) -> str:
+    def repo_branches(self, chain: str) -> dict[str, str]:
+        """
+        Returns the branch to study for each component repo.
+        Matches keys returned by repo_paths().
+        """
         return {
-            "bitcoin": self.repo_bitcoin,
-            "evm": self.repo_evm,
-            "solana": self.repo_solana,
-            "spark": self.repo_spark,
+            "bitcoin": {
+                "executor": self.branch_bitcoin_executor,
+                "watcher_cobi": self.branch_bitcoin_watcher_cobi,
+                "watcher_zmq": self.branch_bitcoin_watcher_zmq,
+                "relayer": self.branch_bitcoin_relayer,
+            },
+            "evm": {
+                "executor": self.branch_evm_executor,
+                "watcher": self.branch_evm_watcher,
+                "relayer": self.branch_evm_relayer,
+                "htlc": self.branch_evm_htlc,
+            },
+            "solana": {
+                "executor": self.branch_solana_executor,
+                "watcher": self.branch_solana_watcher,
+                "relayer": self.branch_solana_relayer,
+                "htlc": self.branch_solana_htlc,
+            },
+            "spark": {
+                "executor": self.branch_spark,
+            },
         }[chain]
+
+    def repo_paths(self, chain: str) -> dict[str, str]:
+        """
+        Returns all component repos for a chain as {component_name: path}.
+        Used by study agent and specialist tools to navigate multiple repos.
+        """
+        return {
+            "bitcoin": {
+                "executor": self.repo_bitcoin_executor,
+                "watcher_cobi": self.repo_bitcoin_watcher_cobi,
+                "watcher_zmq": self.repo_bitcoin_watcher_zmq,
+                "relayer": self.repo_bitcoin_relayer,
+            },
+            "evm": {
+                "executor": self.repo_evm_executor,
+                "watcher": self.repo_evm_watcher,
+                "relayer": self.repo_evm_relayer,
+                "htlc": self.repo_evm_htlc,
+            },
+            "solana": {
+                "executor": self.repo_solana_executor,
+                "watcher": self.repo_solana_watcher,
+                "relayer": self.repo_solana_relayer,
+                "htlc": self.repo_solana_htlc,
+            },
+            "spark": {
+                "executor": self.repo_spark,
+            },
+        }[chain]
+
+    def repo_path(self, chain: str, component: str = "executor") -> str:
+        """
+        Returns the path for a specific component repo.
+        Defaults to 'executor' for backward compatibility.
+        """
+        return self.repo_paths(chain)[component]
 
 
 settings = Settings()

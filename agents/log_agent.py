@@ -10,7 +10,8 @@ from models.alert import Alert
 
 MODEL = "claude-haiku-4-5-20251001"
 
-client = anthropic.Anthropic()
+from config import settings as _settings
+client = anthropic.Anthropic(api_key=_settings.anthropic_api_key)
 
 SYSTEM_PROMPT = """\
 You are a Log Intelligence Agent for Garden, a cross-chain bridge system.

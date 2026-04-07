@@ -8,14 +8,14 @@ import anthropic
 from pathlib import Path
 
 from config import settings
-from tools.repo import REPO_TOOL_DEFINITIONS, execute_repo_tool
+from tools.repo import execute_repo_tool
 
 
 MODEL = "claude-opus-4-6"
 KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
 INCIDENTS_DIR = Path(__file__).parent.parent / "incidents"
 
-client = anthropic.Anthropic()
+client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 SYSTEM_PROMPT = """\
 You are a code study agent. Your job is to deeply read a blockchain executor/watcher/relayer
@@ -69,9 +69,26 @@ Focus on: entry points, core logic, error handling, constants, config.
 """
 
 
+def _checkout_and_pull(path: str, branch: str) -> None:
+    """
+    Checkout the target branch and pull latest (best-effort; failures are silently ignored).
+    This ensures the study agent reads the code that's actually deployed.
+    """
+    try:
+        subprocess.run(["git", "-C", path, "checkout", branch], check=True, capture_output=True)
+        subprocess.run(["git", "-C", path, "pull", "--ff-only"], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+
 def run(chain: str) -> str:
     """
-    Study the chain's repo and write knowledge/{chain}.md.
+    Study all component repos for a chain and write knowledge/{chain}.md.
+
+    For bitcoin: executor, watcher_cobi, watcher_zmq, relayer, htlc
+    For evm:     executor, watcher, relayer, htlc
+    For solana:  executor, watcher, relayer, htlc
+    For spark:   executor
 
     Args:
         chain: Chain name — bitcoin, evm, solana, or spark
@@ -79,15 +96,22 @@ def run(chain: str) -> str:
     Returns:
         Path to the written knowledge file as a string
     """
-    repo_root = settings.repo_path(chain)
-    if not Path(repo_root).exists():
-        raise FileNotFoundError(f"Repo not found at {repo_root}. Clone it first.")
+    repo_map = settings.repo_paths(chain)
+    branch_map = settings.repo_branches(chain)
 
-    # Pull latest code
-    try:
-        subprocess.run(["git", "-C", repo_root, "pull", "--ff-only"], check=True, capture_output=True)
-    except subprocess.CalledProcessError:
-        pass  # If pull fails (e.g., no remote), continue with current state
+    # Validate all repos exist, checkout correct branch, pull latest
+    missing = []
+    for component, path in repo_map.items():
+        if not Path(path).exists():
+            missing.append(f"{component} → {path}")
+        else:
+            branch = branch_map.get(component, "staging")
+            _checkout_and_pull(path, branch)
+
+    if missing:
+        raise FileNotFoundError(
+            f"Missing repos for chain '{chain}'. Clone these first:\n" + "\n".join(missing)
+        )
 
     # Load past incidents if available
     incidents_context = ""
@@ -98,17 +122,31 @@ def run(chain: str) -> str:
             f"```yaml\n{incidents_path.read_text()}\n```\n"
         )
 
+    # Describe each repo to the agent (include branch so it's in the knowledge doc)
+    repo_listing = "\n".join(
+        f"  - repo='{component}' → {path} (branch: {branch_map.get(component, 'staging')})"
+        for component, path in repo_map.items()
+    )
+
     user_message = (
-        f"Study the {chain} executor/watcher/relayer codebase at: {repo_root}\n\n"
-        f"Start by listing the root directory to understand the project structure. "
-        f"Then systematically read the most important files — entry points, core logic, "
+        f"Study all {chain} service repos. There are {len(repo_map)} component repos:\n"
+        f"{repo_listing}\n\n"
+        f"Use the 'repo' parameter in your tools to switch between components. "
+        f"Start by listing the root directory of each repo to understand the project structure. "
+        f"Then systematically read the most important files in each — entry points, core logic, "
         f"error handling, fee estimation, retry logic, and configuration. "
         f"Skip: vendor/, node_modules/, *_test.go, *.pb.go, *.generated.*, dist/, build/\n"
         f"{incidents_context}\n"
-        f"After reading enough to have a comprehensive understanding, write a detailed "
-        f"knowledge document following the 7-section structure from your instructions. "
-        f"Be specific — include function names, file paths, and actual constant values you found."
+        f"After reading enough to have a comprehensive understanding of ALL components, "
+        f"write a single detailed knowledge document following the 7-section structure from "
+        f"your instructions. Cover each component (executor, watcher(s), relayer, htlc) in context "
+        f"— how they interact, where they hand off to each other, and how failures propagate. "
+        f"Be specific — include function names, file paths (with repo prefix), and actual constant values."
     )
+
+    # Build chain-aware tool definitions so the agent sees available repo names
+    from tools.repo import build_repo_tool_definitions
+    tool_defs = build_repo_tool_definitions(chain)
 
     messages = [{"role": "user", "content": user_message}]
 
@@ -120,7 +158,7 @@ def run(chain: str) -> str:
             thinking={"type": "adaptive"},
             output_config={"effort": "high"},
             system=SYSTEM_PROMPT,
-            tools=REPO_TOOL_DEFINITIONS,
+            tools=tool_defs,
             messages=messages,
         )
 
