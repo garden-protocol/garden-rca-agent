@@ -87,7 +87,7 @@ def run(chain: str) -> str:
 
     For bitcoin: executor, watcher_cobi, watcher_zmq, relayer, htlc
     For evm:     executor, watcher, relayer, htlc
-    For solana:  executor, watcher, relayer, htlc
+    For solana:  executor, watcher, relayer, native_swaps, spl_swaps
     For spark:   executor
 
     Args:
