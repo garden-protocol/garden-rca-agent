@@ -8,7 +8,7 @@ from tools.loki import LOKI_TOOL_DEFINITIONS, execute_loki_tool
 from models.alert import Alert
 
 
-MODEL = "claude-opus-4-6"
+MODEL = "claude-haiku-4-5-20251001"
 
 client = anthropic.Anthropic()
 

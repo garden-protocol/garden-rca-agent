@@ -6,7 +6,7 @@ import anthropic
 from abc import ABC, abstractmethod
 
 
-MODEL = "claude-opus-4-6"
+MODEL = "claude-haiku-4-5-20251001"
 
 client = anthropic.Anthropic()
 
