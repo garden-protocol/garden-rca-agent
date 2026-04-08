@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from config import settings
 from models.alert import Alert
 from models.report import RCAReport
+from models.investigate import InvestigateRequest, InvestigateResponse
 import agents.orchestrator as orchestrator
 import study.study_agent as study_agent
 
@@ -88,6 +89,46 @@ async def run_rca(alert: Alert):
         return report
     except Exception as exc:
         logger.exception("RCA pipeline failed for order %s", alert.order_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/investigate", response_model=InvestigateResponse)
+async def investigate_order(req: InvestigateRequest):
+    """
+    Order-state-aware investigation endpoint.
+
+    Accepts a raw order ID or a full Garden Finance URL.
+    Automatically classifies the swap state, runs cheap deterministic checks first,
+    and escalates to the full LLM pipeline only when needed.
+
+    States detected:
+      - DestInitPending    — source inited, destination not yet inited
+      - UserRedeemPending  — destination inited but not redeemed
+      - SolverRedeemPending — destination redeemed, source not yet redeemed
+
+    Early returns (no LLM cost):
+      - Order blacklisted
+      - Filled amount outside tolerance
+      - Insufficient solver liquidity
+      - Source initiate past deadline
+      - No user init found
+      - Relayer/executor balance too low
+      - HTLC already redeemed on-chain (watcher out of sync)
+    """
+    logger.info("Investigate request: order=%s", req.order_id)
+    start = time.monotonic()
+    try:
+        response = orchestrator.investigate(req.order_id)
+        logger.info(
+            "Investigate complete: order=%s state=%s early_return=%s duration=%.1fs",
+            response.order_id,
+            response.state.value,
+            response.early_return,
+            response.duration_seconds,
+        )
+        return response
+    except Exception as exc:
+        logger.exception("Investigation failed for order %s", req.order_id)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

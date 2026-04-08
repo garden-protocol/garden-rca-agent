@@ -1,14 +1,20 @@
 """
 Orchestrator Agent.
-Receives the alert, routes to the correct chain specialist (with log + on-chain support),
-and synthesizes the final RCA report.
+Receives the alert (or order ID), routes to the correct chain specialist
+(with log + on-chain support), and synthesizes the final RCA report.
+
+Two entry points:
+  investigate(order_id)  — smart pipeline: fetch order → classify state →
+                           deterministic early-return checks → LLM pipeline
+  run(alert)             — legacy alert-based pipeline (used by /rca endpoint)
 """
+import logging
 import time
-import anthropic
 from datetime import datetime, timezone
 
 from models.alert import Alert
 from models.report import RCAReport
+from models.investigate import SwapState, InvestigateResponse
 import agents.log_agent as log_agent
 from agents.specialists.bitcoin import BitcoinSpecialist
 from agents.specialists.evm import EVMSpecialist
@@ -18,7 +24,18 @@ from agents.onchain.bitcoin import BitcoinOnChainAgent
 from agents.onchain.evm import EVMOnChainAgent
 from agents.onchain.solana import SolanaOnChainAgent
 from agents.onchain.spark import SparkOnChainAgent
+from tools.orders_api import (
+    fetch_order,
+    parse_order_id,
+    classify_state,
+    normalize_chain,
+    fetch_order_created_at,
+)
+from tools.liquidity import check_solver_liquidity
+from config import settings
 
+
+logger = logging.getLogger("rca-agent.orchestrator")
 
 _SPECIALISTS = {
     "bitcoin": BitcoinSpecialist(),
@@ -35,17 +52,303 @@ _ONCHAIN_AGENTS = {
 }
 
 
+# ── Investigation pipeline ────────────────────────────────────────────────────
+
+def investigate(raw_order_id: str) -> InvestigateResponse:
+    """
+    Order-state-aware investigation pipeline.
+
+    Steps:
+      1. Parse order_id (strip URL prefix if needed)
+      2. Fetch full order from Garden Finance API
+      3. Classify swap state (DestInitPending / UserRedeemPending / SolverRedeemPending)
+      4. Run cheap, deterministic early-return checks (no LLM) — uses on-chain agents
+         for RPC queries when needed
+      5. If no early return → build Alert + run the full LLM pipeline (run())
+    """
+    started_at = time.monotonic()
+    order_id = parse_order_id(raw_order_id)
+    logger.info("Investigating order %s", order_id)
+
+    # ── Fetch order ───────────────────────────────────────────────────────────
+    order = fetch_order(order_id)
+    result = order.result
+    co = result.create_order
+    src = result.source_swap
+    dst = result.destination_swap
+
+    src_chain_api = src.chain          # API name, e.g. "bitcoin"
+    dst_chain_api = dst.chain          # API name, e.g. "ethereum"
+    src_chain = normalize_chain(src_chain_api)   # internal name, e.g. "bitcoin"
+    dst_chain = normalize_chain(dst_chain_api)   # internal name, e.g. "evm"
+
+    # ── Classify state ────────────────────────────────────────────────────────
+    state = classify_state(order)
+    logger.info("Order %s classified as: %s", order_id, state.value)
+
+    def _early(reason: str) -> InvestigateResponse:
+        return InvestigateResponse(
+            order_id=order_id,
+            state=state,
+            source_chain=src_chain,
+            destination_chain=dst_chain,
+            early_return=True,
+            reason=reason,
+            generated_at=datetime.now(timezone.utc),
+            duration_seconds=round(time.monotonic() - started_at, 2),
+        )
+
+    # ── No user init (pre-state check) ───────────────────────────────────────
+    if not src.is_initiated:
+        return _early("No User Init found for this order.")
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # DestInitPending early-return checks
+    # ═════════════════════════════════════════════════════════════════════════
+    if state == SwapState.DEST_INIT_PENDING:
+
+        # 1. Blacklist check
+        if co.additional_data.is_blacklisted:
+            return _early("Order is blacklisted; solver will not initiate on destination.")
+
+        # 2. Filled amount tolerance check
+        amount = src.amount_int
+        filled = src.filled_amount_int
+        if amount > 0:
+            deviation_pct = abs(filled - amount) / amount * 100
+            if deviation_pct > settings.filled_amount_tolerance_pct:
+                return _early(
+                    f"Filled amount ({filled}) differs from expected ({amount}) by "
+                    f"{deviation_pct:.1f}% — exceeds tolerance of "
+                    f"{settings.filled_amount_tolerance_pct}%; solver threshold not met."
+                )
+
+        # 3. Solver liquidity check
+        if settings.liquidity_url:
+            has_liquidity, shortage_msg = check_solver_liquidity(
+                solver_id=co.solver_id,
+                dest_chain=dst_chain_api,
+                asset=dst.asset,
+                required_amount=co.destination_amount,
+            )
+            if not has_liquidity:
+                return _early(shortage_msg)
+
+        # 4. Deadline check — initiate_timestamp vs solver deadline
+        deadline_unix = co.additional_data.deadline
+        if deadline_unix and src.initiate_timestamp:
+            initiate_ts = src.initiate_timestamp
+            if initiate_ts.tzinfo is None:
+                initiate_ts = initiate_ts.replace(tzinfo=timezone.utc)
+            if int(initiate_ts.timestamp()) > deadline_unix:
+                return _early(
+                    "Source initiate timestamp is past the solver deadline; "
+                    "solver will not initiate on destination."
+                )
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # UserRedeemPending early-return checks
+    # ═════════════════════════════════════════════════════════════════════════
+    elif state == SwapState.USER_REDEEM_PENDING:
+
+        onchain_agent = _ONCHAIN_AGENTS.get(dst_chain)
+        if onchain_agent:
+
+            # 1. Relayer native balance check
+            relayer_addr = settings.relayer_address(dst_chain)
+            if relayer_addr:
+                min_bal = settings.min_gas_balance(dst_chain)
+                balance_question = (
+                    f"Check the native token balance of address {relayer_addr}. "
+                    f"The minimum required balance is {min_bal} (in the chain's base unit — "
+                    f"wei for EVM, lamports for Solana, satoshis for Bitcoin). "
+                    f"If the balance is below this threshold, start your response with "
+                    f"'BALANCE_INSUFFICIENT' and include the actual balance. "
+                    f"Otherwise start your response with 'BALANCE_OK' and include the balance."
+                )
+                try:
+                    balance_result = onchain_agent.query(balance_question)
+                    findings = balance_result.get("findings", "")
+                    logger.info("UserRedeemPending balance check findings: %s", findings[:200])
+                    if "BALANCE_INSUFFICIENT" in findings.upper():
+                        return _early(
+                            f"Please fund relayer {relayer_addr} with native token on "
+                            f"{dst_chain_api}. {findings}"
+                        )
+                except Exception as exc:
+                    logger.warning("Relayer balance check failed: %s", exc)
+
+            # 2. HTLC already-redeemed check
+            htlc_question = (
+                f"Check whether the HTLC at address {dst.htlc_address} with "
+                f"secret_hash {src.secret_hash} has already been redeemed on-chain. "
+                f"Look up the contract or account state directly. "
+                f"If it has already been redeemed, start your response with 'HTLC_REDEEMED'. "
+                f"Otherwise start your response with 'HTLC_PENDING'."
+            )
+            try:
+                htlc_result = onchain_agent.query(htlc_question)
+                findings = htlc_result.get("findings", "")
+                logger.info("UserRedeemPending HTLC check findings: %s", findings[:200])
+                if "HTLC_REDEEMED" in findings.upper():
+                    return _early(
+                        "Watcher failed to update state. Destination redeem already happened "
+                        "on-chain; please check RPC/watcher."
+                    )
+            except Exception as exc:
+                logger.warning("HTLC redeem check failed: %s", exc)
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # SolverRedeemPending early-return checks
+    # ═════════════════════════════════════════════════════════════════════════
+    elif state == SwapState.SOLVER_REDEEM_PENDING:
+
+        onchain_agent = _ONCHAIN_AGENTS.get(src_chain)
+        if onchain_agent:
+
+            # 1. Executor native balance / gas check
+            executor_addr = settings.executor_address(src_chain)
+            if executor_addr:
+                min_bal = settings.min_gas_balance(src_chain)
+                balance_question = (
+                    f"Check the native token balance of executor address {executor_addr}. "
+                    f"The minimum required balance is {min_bal} (base unit). "
+                    f"If the balance is below this threshold, start your response with "
+                    f"'BALANCE_INSUFFICIENT' and include the actual balance. "
+                    f"Otherwise start your response with 'BALANCE_OK'."
+                )
+                try:
+                    balance_result = onchain_agent.query(balance_question)
+                    findings = balance_result.get("findings", "")
+                    logger.info("SolverRedeemPending balance check findings: %s", findings[:200])
+                    if "BALANCE_INSUFFICIENT" in findings.upper():
+                        return _early(
+                            f"Please fund executor {executor_addr} with native token on "
+                            f"{src_chain_api}. {findings}"
+                        )
+                except Exception as exc:
+                    logger.warning("Executor balance check failed: %s", exc)
+
+            # 2. Source HTLC already-redeemed check
+            htlc_question = (
+                f"Check whether the HTLC at address {src.htlc_address} with "
+                f"secret_hash {src.secret_hash} has already been redeemed on-chain. "
+                f"If it has already been redeemed, start your response with 'HTLC_REDEEMED'. "
+                f"Otherwise start your response with 'HTLC_PENDING'."
+            )
+            try:
+                htlc_result = onchain_agent.query(htlc_question)
+                findings = htlc_result.get("findings", "")
+                logger.info("SolverRedeemPending source HTLC check findings: %s", findings[:200])
+                if "HTLC_REDEEMED" in findings.upper():
+                    return _early(
+                        "Please check watcher RPCs; source redeem already happened on-chain "
+                        "but watcher has not updated the order state."
+                    )
+            except Exception as exc:
+                logger.warning("Source HTLC redeem check failed: %s", exc)
+
+    # ── Unknown state ─────────────────────────────────────────────────────────
+    elif state == SwapState.UNKNOWN:
+        both_redeemed = src.is_redeemed and dst.is_redeemed
+        if both_redeemed:
+            return _early("Order has already completed successfully (both sides redeemed).")
+        if src.is_refunded or dst.is_refunded:
+            return _early("Order has been refunded — no further action needed.")
+        return _early(
+            "Unable to classify order into a known stuck state. "
+            "Manual investigation required."
+        )
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # No early return — escalate to full LLM pipeline
+    # ═════════════════════════════════════════════════════════════════════════
+    alert = _build_alert_from_order(order_id, order, state, src_chain, dst_chain)
+    rca_report = run(alert)
+
+    return InvestigateResponse(
+        order_id=order_id,
+        state=state,
+        source_chain=src_chain,
+        destination_chain=dst_chain,
+        early_return=False,
+        rca_report=rca_report,
+        generated_at=datetime.now(timezone.utc),
+        duration_seconds=round(time.monotonic() - started_at, 2),
+    )
+
+
+def _build_alert_from_order(
+    order_id: str,
+    order: "OrderApiResponse",
+    state: SwapState,
+    src_chain: str,
+    dst_chain: str,
+) -> Alert:
+    """
+    Construct an Alert from full order data so the existing run() pipeline can handle it.
+    The chain/service/network fields are inferred from the order and stuck state.
+    """
+    result = order.result
+    co = result.create_order
+    src = result.source_swap
+
+    # Decide which chain's service is responsible based on stuck state
+    if state == SwapState.DEST_INIT_PENDING:
+        chain = dst_chain
+        service = "executor"
+        alert_type = "missed_init"
+    elif state == SwapState.USER_REDEEM_PENDING:
+        chain = dst_chain
+        service = "relayer"
+        alert_type = "stuck_order"
+    else:  # SolverRedeemPending
+        chain = src_chain
+        service = "executor"
+        alert_type = "stuck_order"
+
+    return Alert(
+        order_id=order_id,
+        alert_type=alert_type,
+        chain=chain,  # type: ignore[arg-type]
+        service=service,  # type: ignore[arg-type]
+        network="mainnet",
+        message=(
+            f"Order {order_id} is stuck in state {state.value}. "
+            f"Source: {co.source_chain} → Destination: {co.destination_chain}."
+        ),
+        timestamp=datetime.now(timezone.utc),
+        deadline=None,
+        metadata={
+            "order_created_at": result.created_at.isoformat(),
+            "source_chain": co.source_chain,
+            "destination_chain": co.destination_chain,
+            "solver_id": co.solver_id,
+            "source_amount": co.source_amount,
+            "destination_amount": co.destination_amount,
+            "src_initiate_tx_hash": src.initiate_tx_hash,
+            "secret_hash": src.secret_hash,
+            "stuck_state": state.value,
+        },
+    )
+
+
+# ── Legacy alert-based pipeline ───────────────────────────────────────────────
+
 def run(alert: Alert) -> RCAReport:
     """
     Full RCA pipeline:
-      1. Log Intelligence Agent queries Loki
-      2. On-Chain Agent queries chain state (if needed — specialist decides)
-      3. Chain Specialist performs root cause analysis
-      4. Orchestrator assembles the final RCAReport
+      1. Enrich alert with order API data (created_at)
+      2. Log Intelligence Agent queries Loki
+      3. On-Chain Agent queries chain state
+      4. Chain Specialist performs root cause analysis
+      5. Orchestrator assembles the final RCAReport
 
     Failures in any step are non-fatal — the pipeline degrades gracefully.
     """
     started_at = time.monotonic()
+
+    alert = _enrich_with_order_created_at(alert)
 
     # ── Step 1: Log Intelligence ──────────────────────────────────────────────
     log_result = {"summary": "[Log agent not run]", "raw_lines": []}
@@ -60,7 +363,7 @@ def run(alert: Alert) -> RCAReport:
     if onchain_agent:
         try:
             question = _onchain_question(alert)
-            context = log_result["summary"][:1500]  # give logs as context
+            context = log_result["summary"][:1500]
             onchain_result = onchain_agent.query(question, context)
         except Exception as exc:
             onchain_result = {
@@ -96,7 +399,6 @@ def run(alert: Alert) -> RCAReport:
 
     # ── Step 4: Assemble Report ───────────────────────────────────────────────
     duration = time.monotonic() - started_at
-
     log_evidence = _extract_evidence_lines(log_result["raw_lines"])
 
     return RCAReport(
@@ -115,6 +417,27 @@ def run(alert: Alert) -> RCAReport:
         generated_at=datetime.now(timezone.utc),
         duration_seconds=round(duration, 2),
     )
+
+
+def _enrich_with_order_created_at(alert: Alert) -> Alert:
+    """Enrich alert.metadata with order_created_at from the order API. Non-fatal on failure."""
+    metadata = dict(alert.metadata or {})
+    if metadata.get("order_created_at"):
+        return alert
+    try:
+        created_at, source_path = fetch_order_created_at(alert.order_id)
+    except Exception as exc:
+        logger.warning("Order API lookup failed for order %s: %s", alert.order_id, exc)
+        return alert
+    metadata["order_created_at"] = created_at.isoformat()
+    metadata["order_created_at_source"] = source_path
+    logger.info(
+        "Order %s created_at resolved via API: %s (source=%s)",
+        alert.order_id,
+        metadata["order_created_at"],
+        source_path,
+    )
+    return alert.model_copy(update={"metadata": metadata})
 
 
 def _onchain_question(alert: Alert) -> str:
@@ -140,8 +463,7 @@ def _extract_evidence_lines(raw_lines: list[str]) -> list[str]:
     priority = [l for l in raw_lines if any(k in l.lower() for k in ("error", "err", "fail", "panic", "fatal"))]
     warnings = [l for l in raw_lines if any(k in l.lower() for k in ("warn", "timeout", "retry"))]
     rest = [l for l in raw_lines if l not in priority and l not in warnings]
-    combined = priority + warnings + rest
-    return combined[:20]
+    return (priority + warnings + rest)[:20]
 
 
 def _serialize_onchain(result: dict | None) -> dict | None:

@@ -76,6 +76,59 @@ class Settings(BaseSettings):
     # Server
     port: int = 8000
 
+    # ── Investigation pipeline ────────────────────────────────────────────────
+
+    # Max % deviation between source filled_amount and expected amount before skipping
+    filled_amount_tolerance_pct: float = 5.0
+
+    # URL that returns all solvers' available liquidity (no auth, returns JSON list/map)
+    liquidity_url: str = ""
+
+    # Per-chain relayer wallet addresses (used in UserRedeemPending balance check)
+    relayer_address_bitcoin: str = ""
+    relayer_address_evm: str = ""
+    relayer_address_solana: str = ""
+    relayer_address_spark: str = ""
+
+    # Per-chain executor wallet addresses (used in SolverRedeemPending gas check)
+    executor_address_bitcoin: str = ""
+    executor_address_evm: str = ""
+    executor_address_solana: str = ""
+    executor_address_spark: str = ""
+
+    # Minimum native balances before flagging as insufficient
+    min_evm_gas_balance: int = 10_000_000_000_000_000    # 0.01 ETH in wei
+    min_solana_gas_balance: int = 10_000_000              # 0.01 SOL in lamports
+    min_bitcoin_gas_balance: int = 10_000                 # 10k satoshis
+    min_spark_gas_balance: int = 10_000_000_000_000_000   # 0.01 SPARK in wei
+
+    def relayer_address(self, chain: str) -> str:
+        """Return the configured relayer address for a given internal chain name."""
+        return {
+            "bitcoin": self.relayer_address_bitcoin,
+            "evm": self.relayer_address_evm,
+            "solana": self.relayer_address_solana,
+            "spark": self.relayer_address_spark,
+        }.get(chain, "")
+
+    def executor_address(self, chain: str) -> str:
+        """Return the configured executor address for a given internal chain name."""
+        return {
+            "bitcoin": self.executor_address_bitcoin,
+            "evm": self.executor_address_evm,
+            "solana": self.executor_address_solana,
+            "spark": self.executor_address_spark,
+        }.get(chain, "")
+
+    def min_gas_balance(self, chain: str) -> int:
+        """Return the minimum acceptable native balance (chain-native units) for a chain."""
+        return {
+            "bitcoin": self.min_bitcoin_gas_balance,
+            "evm": self.min_evm_gas_balance,
+            "solana": self.min_solana_gas_balance,
+            "spark": self.min_spark_gas_balance,
+        }.get(chain, 0)
+
     def repo_branches(self, chain: str) -> dict[str, str]:
         """
         Returns the branch to study for each component repo.
