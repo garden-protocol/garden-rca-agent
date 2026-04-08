@@ -29,6 +29,7 @@ logger = logging.getLogger("rca-bot")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 RCA_AGENT_URL     = os.getenv("RCA_AGENT_URL", "http://localhost:8080").rstrip("/")
 SERVER_SECRET     = os.getenv("SERVER_SECRET", "")
+DISCORD_GUILD_ID  = os.getenv("DISCORD_GUILD_ID", "")
 
 # Severity → Discord colour
 _SEVERITY_COLOUR = {
@@ -126,8 +127,14 @@ class RCABot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        await self.tree.sync()
-        logger.info("Slash commands synced.")
+        if DISCORD_GUILD_ID:
+            guild = discord.Object(id=int(DISCORD_GUILD_ID))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            logger.info("Slash commands synced to guild %s (instant).", DISCORD_GUILD_ID)
+        else:
+            await self.tree.sync()
+            logger.info("Slash commands synced globally (may take up to 1 hour).")
 
     async def on_ready(self):
         logger.info("Logged in as %s (id=%s)", self.user, self.user.id)
