@@ -69,20 +69,31 @@ def query_loki(logql: str, start: datetime, end: datetime, limit: int = 200) -> 
         return [f"[LOKI ERROR] {type(e).__name__}: {e}"]
 
 
-def search_by_order_id(order_id: str, minutes_back: int = 30) -> list[str]:
+def search_by_order_id(
+    order_id: str,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+    minutes_back: int = 30,
+) -> list[str]:
     """
     Search all logs for a specific order_id across all services.
 
     Args:
         order_id: The order ID to search for
-        minutes_back: How many minutes of history to search (default 30)
+        start_iso: Explicit start time in ISO 8601 format (overrides minutes_back)
+        end_iso: Explicit end time in ISO 8601 format (overrides minutes_back)
+        minutes_back: Fallback if start_iso/end_iso not provided (default 30)
 
     Returns:
         List of log lines containing the order_id
     """
     from datetime import timedelta
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(minutes=minutes_back)
+    if start_iso and end_iso:
+        start = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+    else:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(minutes=minutes_back)
     logql = f'{{}} |= `{order_id}`'
     return query_loki(logql, start, end, limit=500)
 
@@ -91,6 +102,8 @@ def search_by_service(
     service: str,
     chain: str,
     network: str,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
     minutes_back: int = 30,
     level_filter: str = "",
 ) -> list[str]:
@@ -101,15 +114,21 @@ def search_by_service(
         service: Service name (executor, watcher, relayer)
         chain: Chain name (bitcoin, evm, solana)
         network: Network (mainnet, testnet)
-        minutes_back: How many minutes of history to search
+        start_iso: Explicit start time in ISO 8601 format (overrides minutes_back)
+        end_iso: Explicit end time in ISO 8601 format (overrides minutes_back)
+        minutes_back: Fallback if start_iso/end_iso not provided
         level_filter: Optional log level filter, e.g. 'error' or 'warn'
 
     Returns:
         List of matching log lines
     """
     from datetime import timedelta
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(minutes=minutes_back)
+    if start_iso and end_iso:
+        start = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+    else:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(minutes=minutes_back)
 
     # Build label selector — adjust these label names to match your Loki setup
     logql = f'{{service="{service}", chain="{chain}", network="{network}"}}'
@@ -156,7 +175,8 @@ LOKI_TOOL_DEFINITIONS = [
         "name": "search_by_order_id",
         "description": (
             "Search all Loki logs for a specific order_id. "
-            "Returns log lines from all services that mention this order."
+            "Returns log lines from all services that mention this order. "
+            "Prefer using start_iso/end_iso over minutes_back for precise time windows."
         ),
         "input_schema": {
             "type": "object",
@@ -165,9 +185,17 @@ LOKI_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "The order ID to search for",
                 },
+                "start_iso": {
+                    "type": "string",
+                    "description": "Start time in ISO 8601 format, e.g. '2026-04-06T16:00:00Z'. Overrides minutes_back.",
+                },
+                "end_iso": {
+                    "type": "string",
+                    "description": "End time in ISO 8601 format, e.g. '2026-04-06T18:00:00Z'. Overrides minutes_back.",
+                },
                 "minutes_back": {
                     "type": "integer",
-                    "description": "How many minutes of log history to search (default 30)",
+                    "description": "Fallback: minutes of history from now (default 30). Ignored if start_iso/end_iso provided.",
                     "default": 30,
                 },
             },
@@ -178,7 +206,8 @@ LOKI_TOOL_DEFINITIONS = [
         "name": "search_by_service",
         "description": (
             "Search logs for a specific service, chain, and network combination. "
-            "Optionally filter by log level (error, warn, info)."
+            "Optionally filter by log level (error, warn, info). "
+            "Prefer using start_iso/end_iso over minutes_back for precise time windows."
         ),
         "input_schema": {
             "type": "object",
@@ -198,9 +227,17 @@ LOKI_TOOL_DEFINITIONS = [
                     "enum": ["mainnet", "testnet"],
                     "description": "The network environment",
                 },
+                "start_iso": {
+                    "type": "string",
+                    "description": "Start time in ISO 8601 format, e.g. '2026-04-06T16:00:00Z'. Overrides minutes_back.",
+                },
+                "end_iso": {
+                    "type": "string",
+                    "description": "End time in ISO 8601 format, e.g. '2026-04-06T18:00:00Z'. Overrides minutes_back.",
+                },
                 "minutes_back": {
                     "type": "integer",
-                    "description": "How many minutes of log history to search (default 30)",
+                    "description": "Fallback: minutes of history from now (default 30). Ignored if start_iso/end_iso provided.",
                     "default": 30,
                 },
                 "level_filter": {
@@ -226,7 +263,9 @@ def execute_loki_tool(tool_name: str, tool_input: dict) -> str:
     elif tool_name == "search_by_order_id":
         lines = search_by_order_id(
             tool_input["order_id"],
-            tool_input.get("minutes_back", 30),
+            start_iso=tool_input.get("start_iso"),
+            end_iso=tool_input.get("end_iso"),
+            minutes_back=tool_input.get("minutes_back", 30),
         )
         return "\n".join(lines) if lines else "[No logs found for this order_id]"
 
@@ -235,8 +274,10 @@ def execute_loki_tool(tool_name: str, tool_input: dict) -> str:
             tool_input["service"],
             tool_input["chain"],
             tool_input["network"],
-            tool_input.get("minutes_back", 30),
-            tool_input.get("level_filter", ""),
+            start_iso=tool_input.get("start_iso"),
+            end_iso=tool_input.get("end_iso"),
+            minutes_back=tool_input.get("minutes_back", 30),
+            level_filter=tool_input.get("level_filter", ""),
         )
         return "\n".join(lines) if lines else "[No logs found]"
 

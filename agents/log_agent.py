@@ -4,6 +4,7 @@ Queries Loki for relevant log lines given an alert context,
 then returns a structured log summary for use by chain specialists.
 """
 import anthropic
+from datetime import datetime, timedelta, timezone
 from tools.loki import LOKI_TOOL_DEFINITIONS, execute_loki_tool
 from models.alert import Alert
 
@@ -21,6 +22,10 @@ You have three tools:
 - query_loki: run raw LogQL queries (use for precise filtering)
 - search_by_order_id: find all log activity for a specific order
 - search_by_service: find all logs for a service/chain/network
+
+CRITICAL: Always use the start_iso and end_iso parameters provided in the alert details \
+for ALL log queries. Never rely on minutes_back — the time window is anchored to the order \
+creation timestamp, not the current time.
 
 Your output should be a structured markdown report with:
 1. **Timeline** — chronological sequence of key events from the logs
@@ -43,6 +48,19 @@ def run(alert: Alert) -> dict:
     Returns:
         dict with 'summary' (str markdown report) and 'raw_lines' (list[str])
     """
+    # Compute the log query time window: order_created_at ± 1hr
+    order_created_at_str = (alert.metadata or {}).get("order_created_at")
+    if order_created_at_str:
+        order_created_at = datetime.fromisoformat(
+            order_created_at_str.replace("Z", "+00:00")
+        )
+    else:
+        # Fallback to alert timestamp if order_created_at not available
+        order_created_at = alert.timestamp
+
+    window_start = (order_created_at - timedelta(hours=1)).isoformat()
+    window_end = (order_created_at + timedelta(hours=1)).isoformat()
+
     alert_context = (
         f"Order ID: {alert.order_id}\n"
         f"Alert type: {alert.alert_type}\n"
@@ -51,6 +69,7 @@ def run(alert: Alert) -> dict:
         f"Network: {alert.network}\n"
         f"Alert message: {alert.message}\n"
         f"Timestamp: {alert.timestamp.isoformat()}\n"
+        f"Order created at: {order_created_at.isoformat()}\n"
     )
     if alert.deadline:
         alert_context += f"Deadline: {alert.deadline.isoformat()}\n"
@@ -60,10 +79,18 @@ def run(alert: Alert) -> dict:
     user_message = (
         f"Investigate the following alert and query Loki to find relevant logs.\n\n"
         f"Alert details:\n{alert_context}\n\n"
-        f"Start by searching for the order_id across all services, "
-        f"then query the specific service logs for the time window around the alert. "
-        f"Look for errors, warnings, and anomalies. "
-        f"Return a structured markdown report of your findings."
+        f"**IMPORTANT — Time window for all queries:**\n"
+        f"Use start_iso=\"{window_start}\" and end_iso=\"{window_end}\" "
+        f"(order_created_at ± 1 hour) for ALL log queries. "
+        f"Do NOT use minutes_back — always pass explicit start_iso/end_iso.\n\n"
+        f"**Query strategy:**\n"
+        f"1. Search for the order_id across all services using search_by_order_id "
+        f"with the time window above.\n"
+        f"2. Query the **{alert.service}** service logs on **{alert.chain}** / **{alert.network}** "
+        f"using search_by_service with the same time window. "
+        f"Filter for errors and warnings.\n"
+        f"3. Look for errors, warnings, and anomalies.\n"
+        f"4. Return a structured markdown report of your findings."
     )
 
     messages = [{"role": "user", "content": user_message}]
