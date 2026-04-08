@@ -36,8 +36,8 @@ class SwapData(BaseModel):
     swap_id: str
     chain: str                          # "bitcoin", "ethereum", etc.
     asset: str
-    htlc_address: str
-    token_address: str = ""
+    htlc_address: str | None = None
+    token_address: str | None = None
     initiator: str                      # solver address (executor side)
     redeemer: str                       # user address (relayer side)
     timelock: int
