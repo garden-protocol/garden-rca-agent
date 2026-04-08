@@ -106,7 +106,16 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
 
     # ── No user init (pre-state check) ───────────────────────────────────────
     if not src.is_initiated:
-        return _early("No User Init found for this order.")
+        return InvestigateResponse(
+            order_id=order_id,
+            state=SwapState.USER_NOT_INITED,
+            source_chain=src_chain,
+            destination_chain=dst_chain,
+            early_return=True,
+            reason="Source initiate transaction not found; user has not initiated the swap yet.",
+            generated_at=datetime.now(timezone.utc),
+            duration_seconds=round(time.monotonic() - started_at, 2),
+        )
 
     # ═════════════════════════════════════════════════════════════════════════
     # DestInitPending early-return checks

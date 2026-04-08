@@ -9,6 +9,7 @@ from models.report import RCAReport
 
 
 class SwapState(str, Enum):
+    USER_NOT_INITED = "UserNotInited"
     DEST_INIT_PENDING = "DestInitPending"
     USER_REDEEM_PENDING = "UserRedeemPending"
     SOLVER_REDEEM_PENDING = "SolverRedeemPending"
