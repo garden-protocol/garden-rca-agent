@@ -59,7 +59,6 @@ and on-chain agents.
 | `polygon` | `evm` |
 | `avalanche` | `evm` |
 | `solana` | `solana` |
-| `spark` | `spark` |
 
 ---
 
@@ -164,15 +163,12 @@ and calls `run(alert)` which runs:
 | `relayer_address_bitcoin` | `""` | Bitcoin relayer wallet address |
 | `relayer_address_evm` | `""` | EVM relayer wallet address |
 | `relayer_address_solana` | `""` | Solana relayer wallet address |
-| `relayer_address_spark` | `""` | Spark relayer wallet address |
 | `executor_address_bitcoin` | `""` | Bitcoin executor wallet address |
 | `executor_address_evm` | `""` | EVM executor wallet address |
 | `executor_address_solana` | `""` | Solana executor wallet address |
-| `executor_address_spark` | `""` | Spark executor wallet address |
 | `min_evm_gas_balance` | `10_000_000_000_000_000` | 0.01 ETH in wei |
 | `min_solana_gas_balance` | `10_000_000` | 0.01 SOL in lamports |
 | `min_bitcoin_gas_balance` | `10_000` | 10k satoshis |
-| `min_spark_gas_balance` | `10_000_000_000_000_000` | 0.01 SPARK in wei |
 
 ---
 

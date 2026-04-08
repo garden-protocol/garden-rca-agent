@@ -43,9 +43,6 @@ class Settings(BaseSettings):
     repo_solana_native_swaps: str = "/opt/repos/solana-native-swaps"
     repo_solana_spl_swaps: str = "/opt/repos/solana-spl-swaps"
 
-    # Spark repo paths (single executor service for now)
-    repo_spark: str = "/opt/repos/spark-executor"
-
     # Branch overrides per component (default: "staging")
     # Only set these when a component uses a different branch than staging
     branch_bitcoin_executor: str = "staging"
@@ -61,7 +58,6 @@ class Settings(BaseSettings):
     branch_solana_relayer: str = "staging"
     branch_solana_native_swaps: str = "dev"
     branch_solana_spl_swaps: str = "dev"
-    branch_spark: str = "staging"
 
     # Bitcoin RPC
     bitcoin_rpc_url: str = ""
@@ -73,9 +69,6 @@ class Settings(BaseSettings):
 
     # Solana RPC
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
-
-    # Spark RPC
-    spark_rpc_url: str = ""
 
     # Server
     port: int = 8000
@@ -92,19 +85,16 @@ class Settings(BaseSettings):
     relayer_address_bitcoin: str = ""
     relayer_address_evm: str = ""
     relayer_address_solana: str = ""
-    relayer_address_spark: str = ""
 
     # Per-chain executor wallet addresses (used in SolverRedeemPending gas check)
     executor_address_bitcoin: str = ""
     executor_address_evm: str = ""
     executor_address_solana: str = ""
-    executor_address_spark: str = ""
 
     # Minimum native balances before flagging as insufficient
     min_evm_gas_balance: int = 10_000_000_000_000_000    # 0.01 ETH in wei
     min_solana_gas_balance: int = 10_000_000              # 0.01 SOL in lamports
     min_bitcoin_gas_balance: int = 10_000                 # 10k satoshis
-    min_spark_gas_balance: int = 10_000_000_000_000_000   # 0.01 SPARK in wei
 
     def relayer_address(self, chain: str) -> str:
         """Return the configured relayer address for a given internal chain name."""
@@ -112,7 +102,6 @@ class Settings(BaseSettings):
             "bitcoin": self.relayer_address_bitcoin,
             "evm": self.relayer_address_evm,
             "solana": self.relayer_address_solana,
-            "spark": self.relayer_address_spark,
         }.get(chain, "")
 
     def executor_address(self, chain: str) -> str:
@@ -121,7 +110,6 @@ class Settings(BaseSettings):
             "bitcoin": self.executor_address_bitcoin,
             "evm": self.executor_address_evm,
             "solana": self.executor_address_solana,
-            "spark": self.executor_address_spark,
         }.get(chain, "")
 
     def min_gas_balance(self, chain: str) -> int:
@@ -130,7 +118,6 @@ class Settings(BaseSettings):
             "bitcoin": self.min_bitcoin_gas_balance,
             "evm": self.min_evm_gas_balance,
             "solana": self.min_solana_gas_balance,
-            "spark": self.min_spark_gas_balance,
         }.get(chain, 0)
 
     def repo_branches(self, chain: str) -> dict[str, str]:
@@ -158,9 +145,6 @@ class Settings(BaseSettings):
                 "native_swaps": self.branch_solana_native_swaps,
                 "spl_swaps": self.branch_solana_spl_swaps,
             },
-            "spark": {
-                "executor": self.branch_spark,
-            },
         }[chain]
 
     def repo_paths(self, chain: str) -> dict[str, str]:
@@ -187,9 +171,6 @@ class Settings(BaseSettings):
                 "relayer": self.repo_solana_relayer,
                 "native_swaps": self.repo_solana_native_swaps,
                 "spl_swaps": self.repo_solana_spl_swaps,
-            },
-            "spark": {
-                "executor": self.repo_spark,
             },
         }[chain]
 

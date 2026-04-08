@@ -44,7 +44,6 @@ graph TB
 
     subgraph DataSources["Data Sources"]
         LOKI[(Loki<br/>Log Storage)]
-        RPC[(Chain RPC<br/>Bitcoin / EVM / Solana / Spark)]
         REPO[(Cloned Repos<br/>Local Filesystem)]
         KNOWLEDGE[(knowledge/{chain}.md<br/>Generated KT Docs)]
     end
@@ -90,12 +89,10 @@ graph TD
     ORCH --> SPEC_BTC["₿ Bitcoin Specialist<br/>(reads code, reasons about BTC)"]
     ORCH --> SPEC_EVM["⟠ EVM Specialist<br/>(reads code, reasons about EVM)"]
     ORCH --> SPEC_SOL["◎ Solana Specialist<br/>(reads code, reasons about Solana)"]
-    ORCH --> SPEC_SPK["⚡ Spark Specialist<br/>(reads code, reasons about Spark)"]
 
     SPEC_BTC --> OC_BTC["🔗 Bitcoin On-Chain Agent<br/>(tx lookup, mempool, fee rate)"]
     SPEC_EVM --> OC_EVM["🔗 EVM On-Chain Agent<br/>(receipts, gas, contract state)"]
     SPEC_SOL --> OC_SOL["🔗 Solana On-Chain Agent<br/>(accounts, signatures, slots)"]
-    SPEC_SPK --> OC_SPK["🔗 Spark On-Chain Agent<br/>(EVM-compat RPC queries)"]
 
     LOG_AGENT -.->|"log summary"| SPEC_BTC
     LOG_AGENT -.->|"log summary"| SPEC_EVM
@@ -301,14 +298,12 @@ rca-agent/
 │   │   ├── bitcoin.py               # Bitcoin Specialist
 │   │   ├── evm.py                   # EVM Specialist
 │   │   ├── solana.py                # Solana Specialist
-│   │   └── spark.py                 # Spark Specialist
 │   │
 │   └── onchain/
 │       ├── base.py                  # BaseOnChainAgent (agentic loop)
 │       ├── bitcoin.py               # Bitcoin RPC agent (5 tools)
 │       ├── evm.py                   # EVM web3.py agent (5 tools)
 │       ├── solana.py                # Solana JSON-RPC agent (4 tools)
-│       └── spark.py                 # Spark JSON-RPC agent (3 tools)
 │
 ├── study/
 │   └── study_agent.py               # Reads repo → generates knowledge/{chain}.md
@@ -345,14 +340,12 @@ graph LR
         RB[REPO_BITCOIN]
         RE[REPO_EVM]
         RS[REPO_SOLANA]
-        RSP[REPO_SPARK]
     end
 
     subgraph RPCs["RPC URLs (needed for on-chain agents)"]
         BRPC[BITCOIN_RPC_URL + USER + PASS]
         ERPC[EVM_RPC_URL]
         SRPC[SOLANA_RPC_URL]
-        SPRPC[SPARK_RPC_URL]
     end
 ```
 
@@ -368,7 +361,6 @@ The agents start with sensible baselines built into their Python code. To make t
 curl -X POST http://localhost:8000/study/bitcoin
 curl -X POST http://localhost:8000/study/evm
 curl -X POST http://localhost:8000/study/solana
-curl -X POST http://localhost:8000/study/spark
 ```
 
 This reads the cloned repo, generates `knowledge/{chain}.md`, and caches it in specialist prompts.
@@ -478,5 +470,4 @@ Generate or refresh the knowledge doc for a chain.
 ### `GET /health`
 
 ```json
-{"status": "ok", "chains": ["bitcoin", "evm", "solana", "spark"]}
 ```

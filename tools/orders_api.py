@@ -25,7 +25,6 @@ CHAIN_MAP: dict[str, str] = {
     "polygon": "evm",
     "avalanche": "evm",
     "solana": "solana",
-    "spark": "spark",
 }
 
 _ORDER_ID_RE = re.compile(r"[0-9a-fA-F]{64}")

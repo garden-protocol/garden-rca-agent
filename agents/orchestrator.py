@@ -19,11 +19,9 @@ import agents.log_agent as log_agent
 from agents.specialists.bitcoin import BitcoinSpecialist
 from agents.specialists.evm import EVMSpecialist
 from agents.specialists.solana import SolanaSpecialist
-from agents.specialists.spark import SparkSpecialist
 from agents.onchain.bitcoin import BitcoinOnChainAgent
 from agents.onchain.evm import EVMOnChainAgent
 from agents.onchain.solana import SolanaOnChainAgent
-from agents.onchain.spark import SparkOnChainAgent
 from tools.orders_api import (
     fetch_order,
     parse_order_id,
@@ -41,14 +39,12 @@ _SPECIALISTS = {
     "bitcoin": BitcoinSpecialist(),
     "evm": EVMSpecialist(),
     "solana": SolanaSpecialist(),
-    "spark": SparkSpecialist(),
 }
 
 _ONCHAIN_AGENTS = {
     "bitcoin": BitcoinOnChainAgent(),
     "evm": EVMOnChainAgent(),
     "solana": SolanaOnChainAgent(),
-    "spark": SparkOnChainAgent(),
 }
 
 
@@ -96,6 +92,15 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
             reason=reason,
             generated_at=datetime.now(timezone.utc),
             duration_seconds=round(time.monotonic() - started_at, 2),
+        )
+
+    unsupported_chains = [c for c in (src_chain, dst_chain) if c not in _SPECIALISTS]
+    if unsupported_chains:
+        unsupported_csv = ", ".join(unsupported_chains)
+        supported_csv = ", ".join(sorted(_SPECIALISTS.keys()))
+        return _early(
+            f"Unsupported chain(s) for investigation: {unsupported_csv}. "
+            f"Supported chains: {supported_csv}"
         )
 
     # ── No user init (pre-state check) ───────────────────────────────────────

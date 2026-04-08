@@ -46,7 +46,7 @@ def read_file(chain: str, path: str, repo: str = "executor") -> str:
     Read a file from a specific component repo for the chain.
 
     Args:
-        chain: Chain name (bitcoin, evm, solana, spark)
+        chain: Chain name (bitcoin, evm, solana)
         path: Relative path from repo root
         repo: Component repo name (executor, watcher, relayer, htlc, etc.)
 

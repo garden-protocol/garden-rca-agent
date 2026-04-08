@@ -99,7 +99,7 @@ def search_by_service(
 
     Args:
         service: Service name (executor, watcher, relayer)
-        chain: Chain name (bitcoin, evm, solana, spark)
+        chain: Chain name (bitcoin, evm, solana)
         network: Network (mainnet, testnet)
         minutes_back: How many minutes of history to search
         level_filter: Optional log level filter, e.g. 'error' or 'warn'
@@ -190,7 +190,7 @@ LOKI_TOOL_DEFINITIONS = [
                 },
                 "chain": {
                     "type": "string",
-                    "enum": ["bitcoin", "evm", "solana", "spark"],
+                    "enum": ["bitcoin", "evm", "solana"],
                     "description": "The chain to query logs for",
                 },
                 "network": {

@@ -21,7 +21,7 @@ class BaseOnChainAgent(ABC):
     @property
     @abstractmethod
     def chain(self) -> str:
-        """Chain name: bitcoin, evm, solana, spark"""
+        """Chain name: bitcoin, evm, solana"""
         ...
 
     @property
