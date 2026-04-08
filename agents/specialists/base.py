@@ -119,7 +119,7 @@ class BaseSpecialist(ABC):
         tool_defs = build_repo_tool_definitions(chain)
 
         # Agentic loop with repo tools — capped to prevent runaway cost
-        for _turn in range(5):
+        for _turn in range(15):
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=8192,
