@@ -27,7 +27,7 @@
 ```mermaid
 graph TB
     subgraph External["External Triggers"]
-        ALERT[Alert / Webhook<br/>POST /rca]
+        ALERT[Order Investigation<br/>POST /investigate/{server_secret}]
         STUDY_TRIGGER[Manual Trigger<br/>POST /study/{chain}]
     end
 
@@ -409,48 +409,34 @@ The study agent will read past incidents and focus on related code paths.
 
 ## API Reference
 
-### `POST /rca`
+### `POST /investigate/{server_secret}`
 
-Trigger a full RCA for an alert.
+Order-state-aware investigation. Accepts a raw order ID or a full Garden Finance URL.
+Runs cheap deterministic checks first; escalates to the full LLM pipeline only when needed.
 
-**Request body (`Alert`):**
+**Request body (`InvestigateRequest`):**
 ```json
 {
-  "order_id": "ord_abc123",
-  "alert_type": "deadline_approaching",
-  "chain": "bitcoin",
-  "service": "executor",
-  "network": "mainnet",
-  "message": "Order approaching deadline with no init on destination",
-  "timestamp": "2026-04-07T10:00:00Z",
-  "deadline": "2026-04-07T10:30:00Z",
-  "metadata": {}
+  "order_id": "7ac235...c78"
 }
 ```
 
-**Response (`RCAReport`):**
+**Response (`InvestigateResponse`):**
 ```json
 {
-  "order_id": "ord_abc123",
-  "chain": "bitcoin",
-  "service": "executor",
-  "network": "mainnet",
-  "root_cause": "Fee rate (1 sat/vbyte) was below mempool minimum (8 sat/vbyte) at broadcast time. Transaction never entered mempool.",
-  "affected_components": ["fee_estimator", "broadcaster"],
-  "log_evidence": ["fee_rate=1 mempool_min_fee=8", "broadcast: transaction rejected"],
-  "onchain_evidence": {"findings": "Transaction hash not found in mempool or chain.", "tool_calls_count": 2},
-  "suggested_actions": [
-    "Raise the minimum fee floor in fee_estimator.go:45",
-    "Implement dynamic fee multiplier based on mempool congestion",
-    "Add mempool acceptance check before returning from broadcaster"
-  ],
-  "severity": "high",
-  "confidence": "high",
-  "raw_analysis": "...",
+  "order_id": "7ac235...c78",
+  "state": "DestInitPending",
+  "source_chain": "bitcoin",
+  "destination_chain": "evm",
+  "early_return": true,
+  "reason": "Solver has insufficient liquidity on ethereum for usdt.",
+  "rca_report": null,
   "generated_at": "2026-04-07T10:00:45Z",
-  "duration_seconds": 42.1
+  "duration_seconds": 1.2
 }
 ```
+
+When `early_return` is false, `rca_report` contains the full `RCAReport` from the LLM pipeline.
 
 ### `POST /study/{chain}`
 

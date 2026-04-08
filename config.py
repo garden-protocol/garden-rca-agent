@@ -94,11 +94,6 @@ class Settings(BaseSettings):
     relayer_address_evm: str = ""
     relayer_address_solana: str = ""
 
-    # Per-chain executor wallet addresses (used in SolverRedeemPending gas check)
-    executor_address_bitcoin: str = ""
-    executor_address_evm: str = ""
-    executor_address_solana: str = ""
-
     # Minimum native balances before flagging as insufficient
     min_evm_gas_balance: int = 10_000_000_000_000_000    # 0.01 ETH in wei
     min_solana_gas_balance: int = 10_000_000              # 0.01 SOL in lamports
@@ -110,14 +105,6 @@ class Settings(BaseSettings):
             "bitcoin": self.relayer_address_bitcoin,
             "evm": self.relayer_address_evm,
             "solana": self.relayer_address_solana,
-        }.get(chain, "")
-
-    def executor_address(self, chain: str) -> str:
-        """Return the configured executor address for a given internal chain name."""
-        return {
-            "bitcoin": self.executor_address_bitcoin,
-            "evm": self.executor_address_evm,
-            "solana": self.executor_address_solana,
         }.get(chain, "")
 
     def min_gas_balance(self, chain: str) -> int:

@@ -30,7 +30,7 @@ from tools.orders_api import (
     fetch_order_created_at,
     fetch_fiat_prices,
 )
-from tools.liquidity import check_solver_liquidity
+from tools.liquidity import check_solver_liquidity, get_solver_address
 from config import settings
 
 
@@ -246,7 +246,8 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
         if onchain_agent:
 
             # 1. Executor native balance / gas check
-            executor_addr = settings.executor_address(src_chain)
+            # Executor address is resolved from the liquidity API (per-solver, per-chain).
+            executor_addr = get_solver_address(co.solver_id, src_chain_api)
             if executor_addr:
                 min_bal = settings.min_gas_balance(src_chain)
                 balance_question = (
