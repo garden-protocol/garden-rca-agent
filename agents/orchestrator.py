@@ -28,6 +28,7 @@ from tools.orders_api import (
     classify_state,
     normalize_chain,
     fetch_order_created_at,
+    fetch_fiat_prices,
 )
 from tools.liquidity import check_solver_liquidity
 from config import settings
@@ -128,7 +129,30 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
                     f"{settings.filled_amount_tolerance_pct}%; solver threshold not met."
                 )
 
-        # 3. Solver liquidity check
+        # 3. Price fluctuation check — compare stored quote prices against current market prices.
+        # If either input or output token has moved beyond the threshold since quote time,
+        # the solver would have rejected initiating on destination.
+        ad = co.additional_data
+        if ad.input_token_price is not None and ad.output_token_price is not None:
+            try:
+                fiat = fetch_fiat_prices()
+                current_input = fiat.get(f"{co.source_chain}:{co.source_asset}")
+                current_output = fiat.get(f"{co.destination_chain}:{co.destination_asset}")
+                if current_input and current_output:
+                    input_dev = abs(current_input - ad.input_token_price) / ad.input_token_price * 100
+                    output_dev = abs(current_output - ad.output_token_price) / ad.output_token_price * 100
+                    if input_dev > settings.price_deviation_tolerance_pct or output_dev > settings.price_deviation_tolerance_pct:
+                        return _early(
+                            f"Price fluctuation detected: input token '{co.source_asset}' moved "
+                            f"{input_dev:.1f}%, output token '{co.destination_asset}' moved "
+                            f"{output_dev:.1f}% from quote price (threshold: "
+                            f"{settings.price_deviation_tolerance_pct}%); solver likely rejected "
+                            f"the swap due to unfavourable price movement."
+                        )
+            except Exception as exc:
+                logger.warning("Price fluctuation check failed: %s", exc)
+
+        # 4. Solver liquidity check
         if settings.liquidity_url:
             has_liquidity, shortage_msg = check_solver_liquidity(
                 solver_id=co.solver_id,
@@ -139,7 +163,7 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
             if not has_liquidity:
                 return _early(shortage_msg)
 
-        # 4. Deadline check — initiate_timestamp vs solver deadline
+        # 5. Deadline check — initiate_timestamp vs solver deadline
         deadline_unix = co.additional_data.deadline
         if deadline_unix and src.initiate_timestamp:
             initiate_ts = src.initiate_timestamp

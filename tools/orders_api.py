@@ -111,6 +111,19 @@ def classify_state(order: OrderApiResponse) -> SwapState:
     return SwapState.UNKNOWN
 
 
+def fetch_fiat_prices() -> dict[str, float]:
+    """
+    Fetch current token prices in USD from the Garden Finance fiat endpoint.
+
+    GET https://api.garden.finance/v2/fiat
+    Returns a flat dict of {asset_name: usd_price}.
+    """
+    url = "https://api.garden.finance/v2/fiat"
+    resp = httpx.get(url, timeout=settings.order_api_timeout_seconds)
+    resp.raise_for_status()
+    return resp.json()["result"]  # {"chain:asset": usd_price, ...}
+
+
 def fetch_order_created_at(order_id: str) -> tuple[datetime, str]:
     """
     Compatibility shim for orchestrator.run() — returns (created_at, source_path).

@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     # Max % deviation between source filled_amount and expected amount before skipping
     filled_amount_tolerance_pct: float = 5.0
 
+    # Max % deviation between source and destination token values (price * amount) before skipping
+    # If input_token_price * source_amount vs output_token_price * destination_amount diverges
+    # beyond this threshold, the solver likely rejected the swap due to price fluctuation.
+    price_deviation_tolerance_pct: float = 1.0
+
     # URL that returns all solvers' available liquidity (no auth, returns JSON list/map)
     liquidity_url: str = ""
 
