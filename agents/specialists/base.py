@@ -148,6 +148,21 @@ class BaseSpecialist(ABC):
 
             messages.append({"role": "user", "content": tool_results})
 
+        # If the loop hit the turn cap with no text in the last response (still mid-tool-use),
+        # make one final call without tools to force a written summary.
+        if not any(b.type == "text" for b in response.content):
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": (
+                "You have used the maximum number of tool calls. "
+                "Based on everything gathered so far, write your complete root cause analysis now."
+            )})
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=8192,
+                system=self._build_system(),
+                messages=messages,
+            )
+
         raw_analysis = next(
             (b.text for b in response.content if b.type == "text"),
             "[Specialist returned no analysis]",
