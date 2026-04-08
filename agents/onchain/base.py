@@ -25,6 +25,16 @@ class BaseOnChainAgent(ABC):
         ...
 
     @property
+    def system_prompt(self) -> str:
+        """Chain-specific system prompt. Override in subclasses for targeted guidance."""
+        return (
+            f"You are an on-chain query agent for the {self.chain} network. "
+            f"You have access to RPC tools to query live blockchain state. "
+            f"Be precise and factual. Report exactly what you find — do not speculate. "
+            f"If a query fails, report the error honestly."
+        )
+
+    @property
     @abstractmethod
     def tool_definitions(self) -> list[dict]:
         """List of Claude tool definitions for this chain's RPC calls."""
@@ -47,12 +57,7 @@ class BaseOnChainAgent(ABC):
         Returns:
             dict with 'findings' (str) and 'tool_calls' (list)
         """
-        system = (
-            f"You are an on-chain query agent for the {self.chain} network. "
-            f"You have access to RPC tools to query live blockchain state. "
-            f"Be precise and factual. Report exactly what you find — do not speculate. "
-            f"If a query fails, report the error honestly."
-        )
+        system = self.system_prompt
 
         user_content = question
         if context:
