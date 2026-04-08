@@ -116,61 +116,77 @@ class BaseSpecialist(ABC):
 
         messages = [{"role": "user", "content": user_message}]
         chain = self.chain  # capture for closure in tool execution
-        tool_defs = build_repo_tool_definitions(chain)
 
-        # Agentic loop with repo tools — capped to prevent runaway cost
-        for _turn in range(15):
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=8192,
-                system=self._build_system(),
-                tools=tool_defs,
-                messages=messages,
-            )
+        # Only enable repo tools if at least one repo path exists on disk.
+        # In prod without mounted repos, skip directly to a single knowledge-doc-based call.
+        from config import settings as _cfg
+        import os as _os
+        repos_available = any(
+            _os.path.isdir(p) for p in _cfg.repo_paths(chain).values()
+        )
 
-            if response.stop_reason == "end_turn":
-                break
+        if repos_available:
+            tool_defs = build_repo_tool_definitions(chain)
 
-            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-            if not tool_use_blocks:
-                break
+            # Agentic loop with repo tools — capped to prevent runaway cost
+            for _turn in range(15):
+                response = client.messages.create(
+                    model=MODEL,
+                    max_tokens=8192,
+                    system=self._build_system(),
+                    tools=tool_defs,
+                    messages=messages,
+                )
 
-            messages.append({"role": "assistant", "content": response.content})
+                if response.stop_reason == "end_turn":
+                    break
 
-            tool_results = []
-            for tool in tool_use_blocks:
-                result = execute_repo_tool(chain, tool.name, tool.input)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool.id,
-                    "content": result,
+                tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+                if not tool_use_blocks:
+                    break
+
+                messages.append({"role": "assistant", "content": response.content})
+
+                tool_results = []
+                for tool in tool_use_blocks:
+                    result = execute_repo_tool(chain, tool.name, tool.input)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool.id,
+                        "content": result,
+                    })
+
+                messages.append({"role": "user", "content": tool_results})
+
+            # If the loop hit the turn cap with no text in the last response (still mid-tool-use),
+            # satisfy pending tool_use blocks then force a written summary.
+            if not any(b.type == "text" for b in response.content):
+                pending_tool_uses = [b for b in response.content if b.type == "tool_use"]
+                messages.append({"role": "assistant", "content": response.content})
+                stub_results = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool.id,
+                        "content": "Tool call limit reached — no result available.",
+                    }
+                    for tool in pending_tool_uses
+                ]
+                stub_results.append({
+                    "type": "text",
+                    "text": (
+                        "You have used the maximum number of tool calls. "
+                        "Based on everything gathered so far, write your complete root cause analysis now."
+                    ),
                 })
-
-            messages.append({"role": "user", "content": tool_results})
-
-        # If the loop hit the turn cap with no text in the last response (still mid-tool-use),
-        # make one final call without tools to force a written summary.
-        # Must provide tool_result blocks for every pending tool_use before adding new content.
-        if not any(b.type == "text" for b in response.content):
-            pending_tool_uses = [b for b in response.content if b.type == "tool_use"]
-            messages.append({"role": "assistant", "content": response.content})
-            # Satisfy the API requirement: tool_result for each pending tool_use
-            stub_results = [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool.id,
-                    "content": "Tool call limit reached — no result available.",
-                }
-                for tool in pending_tool_uses
-            ]
-            stub_results.append({
-                "type": "text",
-                "text": (
-                    "You have used the maximum number of tool calls. "
-                    "Based on everything gathered so far, write your complete root cause analysis now."
-                ),
-            })
-            messages.append({"role": "user", "content": stub_results})
+                messages.append({"role": "user", "content": stub_results})
+                response = client.messages.create(
+                    model=MODEL,
+                    max_tokens=8192,
+                    system=self._build_system(),
+                    messages=messages,
+                )
+        else:
+            # No repos on disk — analyse directly from knowledge docs
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=8192,
