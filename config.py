@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     grafana_url: str = ""
     grafana_api_key: str = ""
 
+    # Orders API (used by investigate pipeline)
+    order_api_base_url: str = "https://api.garden.finance"
+    order_api_timeout_seconds: float = 10.0
+
     # Bitcoin repo paths
     # Bitcoin has two watchers: cobi (order event watcher) and zmq (mempool/block watcher)
     repo_bitcoin_executor: str = "/opt/repos/bitcoin-executor"
