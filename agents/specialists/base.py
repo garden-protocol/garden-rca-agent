@@ -118,8 +118,8 @@ class BaseSpecialist(ABC):
         chain = self.chain  # capture for closure in tool execution
         tool_defs = build_repo_tool_definitions(chain)
 
-        # Agentic loop with repo tools
-        while True:
+        # Agentic loop with repo tools — capped to prevent runaway cost
+        for _turn in range(5):
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=8192,

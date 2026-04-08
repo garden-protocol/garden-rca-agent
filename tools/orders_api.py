@@ -15,16 +15,25 @@ from models.investigate import SwapState
 
 logger = logging.getLogger("rca-agent.orders_api")
 
-# Maps API chain names → internal chain names used by specialists/onchain agents
+# Maps API chain names → internal chain names used by specialists/onchain agents.
+# Source of truth: https://api.garden.finance/v2/chains
+# EVM chains: all entries whose id starts with "evm:"
+# Absent chains (litecoin, starknet, tron, spark) produce "Unsupported chain" early return.
 CHAIN_MAP: dict[str, str] = {
-    "bitcoin": "bitcoin",
+    # Bitcoin
+    "bitcoin":  "bitcoin",
+    # EVM
     "ethereum": "evm",
     "arbitrum": "evm",
-    "optimism": "evm",
-    "base": "evm",
-    "polygon": "evm",
-    "avalanche": "evm",
-    "solana": "solana",
+    "base":     "evm",
+    "citrea":   "evm",
+    "botanix":  "evm",
+    "bnbchain": "evm",
+    "monad":    "evm",
+    "hyperevm": "evm",
+    "megaeth":  "evm",
+    # Solana
+    "solana":   "solana",
 }
 
 _ORDER_ID_RE = re.compile(r"[0-9a-fA-F]{64}")

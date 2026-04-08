@@ -149,8 +149,8 @@ def run(chain: str) -> str:
 
     messages = [{"role": "user", "content": user_message}]
 
-    # Agentic loop with repo tools
-    while True:
+    # Agentic loop with repo tools — capped to prevent runaway cost
+    for _turn in range(5):
         response = client.messages.create(
             model=MODEL,
             max_tokens=16000,

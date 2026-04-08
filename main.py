@@ -2,20 +2,18 @@
 Garden RCA Agent — FastAPI entrypoint.
 
 Endpoints:
-  POST /rca          — trigger full root cause analysis for an alert
-  POST /study/{chain} — study a chain's repo and generate knowledge doc
-  GET  /health       — health check
+  POST /investigate/{server_secret} — order-state-aware investigation (auth required)
+  POST /study/{chain}               — study a chain's repo and generate knowledge doc
+  GET  /health                      — health check
 """
+import asyncio
 import time
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 
 from config import settings
-from models.alert import Alert
-from models.report import RCAReport
 from models.investigate import InvestigateRequest, InvestigateResponse
 import agents.orchestrator as orchestrator
 import study.study_agent as study_agent
@@ -50,61 +48,19 @@ def health():
     return {"status": "ok", "chains": list(SUPPORTED_CHAINS)}
 
 
-@app.post("/rca", response_model=RCAReport)
-async def run_rca(alert: Alert):
+@app.post("/investigate/{server_secret}", response_model=InvestigateResponse)
+async def investigate_order(server_secret: str, req: InvestigateRequest):
     """
-    Receive an alert and return a full RCA report.
-
-    The pipeline runs:
-      1. Log Intelligence Agent  — queries Loki
-      2. On-Chain Agent          — queries chain state
-      3. Chain Specialist        — synthesizes root cause from code + logs + on-chain
-      4. Orchestrator            — assembles the final report
-    """
-    if alert.chain not in SUPPORTED_CHAINS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unsupported chain: {alert.chain!r}. Must be one of {sorted(SUPPORTED_CHAINS)}",
-        )
-
-    logger.info(
-        "RCA triggered: order=%s chain=%s service=%s network=%s alert_type=%s",
-        alert.order_id,
-        alert.chain,
-        alert.service,
-        alert.network,
-        alert.alert_type,
-    )
-
-    start = time.monotonic()
-    try:
-        report = orchestrator.run(alert)
-        logger.info(
-            "RCA complete: order=%s severity=%s confidence=%s duration=%.1fs",
-            alert.order_id,
-            report.severity,
-            report.confidence,
-            report.duration_seconds,
-        )
-        return report
-    except Exception as exc:
-        logger.exception("RCA pipeline failed for order %s", alert.order_id)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.post("/investigate", response_model=InvestigateResponse)
-async def investigate_order(req: InvestigateRequest):
-    """
-    Order-state-aware investigation endpoint.
+    Order-state-aware investigation endpoint (auth required via path secret).
 
     Accepts a raw order ID or a full Garden Finance URL.
     Automatically classifies the swap state, runs cheap deterministic checks first,
     and escalates to the full LLM pipeline only when needed.
 
     States detected:
-      - DestInitPending    — source inited, destination not yet inited
-      - UserRedeemPending  — destination inited but not redeemed
-      - SolverRedeemPending — destination redeemed, source not yet redeemed
+      - DestInitPending      — source inited, destination not yet inited
+      - UserRedeemPending    — destination inited but not redeemed
+      - SolverRedeemPending  — destination redeemed, source not yet redeemed
 
     Early returns (no LLM cost):
       - Order blacklisted
@@ -115,10 +71,12 @@ async def investigate_order(req: InvestigateRequest):
       - Relayer/executor balance too low
       - HTLC already redeemed on-chain (watcher out of sync)
     """
+    if server_secret != settings.server_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
     logger.info("Investigate request: order=%s", req.order_id)
-    start = time.monotonic()
     try:
-        response = orchestrator.investigate(req.order_id)
+        response = await asyncio.to_thread(orchestrator.investigate, req.order_id)
         logger.info(
             "Investigate complete: order=%s state=%s early_return=%s duration=%.1fs",
             response.order_id,
@@ -148,7 +106,7 @@ async def study_chain(chain: str):
     logger.info("Study mode triggered for chain: %s", chain)
     start = time.monotonic()
     try:
-        output_path = study_agent.run(chain)
+        output_path = await asyncio.to_thread(study_agent.run, chain)
         duration = round(time.monotonic() - start, 1)
         logger.info("Study complete for %s -> %s (%.1fs)", chain, output_path, duration)
         return {

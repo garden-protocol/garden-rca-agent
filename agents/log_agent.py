@@ -96,8 +96,8 @@ def run(alert: Alert) -> dict:
     messages = [{"role": "user", "content": user_message}]
     all_log_lines: list[str] = []
 
-    # Agentic loop
-    while True:
+    # Agentic loop — capped to prevent runaway cost
+    for _turn in range(5):
         response = client.messages.create(
             model=MODEL,
             max_tokens=4096,

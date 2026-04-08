@@ -66,8 +66,8 @@ class BaseOnChainAgent(ABC):
         messages = [{"role": "user", "content": user_content}]
         tool_calls_made = []
 
-        # Agentic loop
-        while True:
+        # Agentic loop — capped to prevent runaway cost
+        for _turn in range(5):
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=4096,

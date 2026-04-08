@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str
 
+    # Server auth — required; set SERVER_SECRET in .env
+    server_secret: str
+
     # Loki (primary)
     loki_url: str = "http://loki.internal:3100"
     loki_auth_token: str = ""
