@@ -150,12 +150,27 @@ class BaseSpecialist(ABC):
 
         # If the loop hit the turn cap with no text in the last response (still mid-tool-use),
         # make one final call without tools to force a written summary.
+        # Must provide tool_result blocks for every pending tool_use before adding new content.
         if not any(b.type == "text" for b in response.content):
+            pending_tool_uses = [b for b in response.content if b.type == "tool_use"]
             messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user", "content": (
-                "You have used the maximum number of tool calls. "
-                "Based on everything gathered so far, write your complete root cause analysis now."
-            )})
+            # Satisfy the API requirement: tool_result for each pending tool_use
+            stub_results = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool.id,
+                    "content": "Tool call limit reached — no result available.",
+                }
+                for tool in pending_tool_uses
+            ]
+            stub_results.append({
+                "type": "text",
+                "text": (
+                    "You have used the maximum number of tool calls. "
+                    "Based on everything gathered so far, write your complete root cause analysis now."
+                ),
+            })
+            messages.append({"role": "user", "content": stub_results})
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=8192,

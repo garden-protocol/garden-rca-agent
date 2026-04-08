@@ -60,14 +60,14 @@ def _build_early_return_embed(data: dict) -> discord.Embed:
     reason = data.get("reason", "No reason provided.")
 
     embed = discord.Embed(
-        title=f"✅ Early Return — {state}",
+        title=f"🔍 Investigation — {state}",
         description=_truncate(reason, 2000),
         colour=discord.Colour.blurple(),
     )
     embed.add_field(name="Order ID", value=f"`{data.get('order_id', '?')}`", inline=False)
     embed.add_field(name="Route",    value=f"{src} → {dst}",               inline=True)
     embed.add_field(name="Duration", value=f"{data.get('duration_seconds', '?')}s", inline=True)
-    embed.set_footer(text="Garden RCA Agent • early return (no LLM cost)")
+    embed.set_footer(text="Garden RCA Agent")
     return embed
 
 
@@ -116,7 +116,7 @@ def _build_rca_embed(data: dict) -> discord.Embed:
             inline=False,
         )
 
-    embed.set_footer(text="Garden RCA Agent • full LLM pipeline")
+    embed.set_footer(text="Garden RCA Agent")
     return embed
 
 
