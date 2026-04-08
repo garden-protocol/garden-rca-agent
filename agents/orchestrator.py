@@ -122,6 +122,20 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
     # ═════════════════════════════════════════════════════════════════════════
     if state == SwapState.DEST_INIT_PENDING:
 
+        # 0. Confirmation pending — init tx detected but not yet sufficiently confirmed.
+        #    Solver will not initiate on destination until required_confirmations are met.
+        if (
+            src.initiate_tx_hash
+            and src.required_confirmations > 0
+            and src.current_confirmations < src.required_confirmations
+        ):
+            return _early(
+                f"Source initiate transaction detected ({src.initiate_tx_hash}) but only "
+                f"{src.current_confirmations}/{src.required_confirmations} confirmations reached. "
+                f"Solver is waiting for full confirmation before initiating on destination — "
+                f"this is expected behaviour, not a stuck order."
+            )
+
         # 1. Blacklist check
         if co.additional_data.is_blacklisted:
             return _early("Order is blacklisted; solver will not initiate on destination.")
