@@ -123,8 +123,6 @@ class BaseSpecialist(ABC):
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=8192,
-                thinking={"type": "adaptive"},
-                output_config={"effort": "high"},
                 system=self._build_system(),
                 tools=tool_defs,
                 messages=messages,

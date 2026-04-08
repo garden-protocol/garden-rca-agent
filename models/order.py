@@ -21,7 +21,7 @@ class AdditionalData(BaseModel):
     deadline: int | None = None                    # UNIX timestamp
     src_init_detection_deadline: int | None = None  # UNIX timestamp
     instant_refund_tx_bytes: str = ""
-    is_blacklisted: bool = False
+    is_blacklisted: bool | None = False
     integrator: str = ""
     version: str = ""
     bitcoin: BitcoinTimestamps | None = None

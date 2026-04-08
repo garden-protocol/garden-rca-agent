@@ -117,10 +117,11 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
         if co.additional_data.is_blacklisted:
             return _early("Order is blacklisted; solver will not initiate on destination.")
 
-        # 2. Filled amount tolerance check
+        # 2. Filled amount tolerance check — only meaningful once init is confirmed on-chain.
+        # If initiate_block_number is "0" the tx hasn't been mined yet; skip the check.
         amount = src.amount_int
         filled = src.filled_amount_int
-        if amount > 0:
+        if amount > 0 and src.initiate_block_number not in ("0", ""):
             deviation_pct = abs(filled - amount) / amount * 100
             if deviation_pct > settings.filled_amount_tolerance_pct:
                 return _early(

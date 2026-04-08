@@ -71,8 +71,6 @@ class BaseOnChainAgent(ABC):
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=4096,
-                thinking={"type": "adaptive"},
-                output_config={"effort": "medium"},
                 system=system,
                 tools=self.tool_definitions,
                 messages=messages,
