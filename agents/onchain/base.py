@@ -65,6 +65,7 @@ class BaseOnChainAgent(ABC):
 
         messages = [{"role": "user", "content": user_content}]
         tool_calls_made = []
+        total_input = total_output = total_cache_read = total_cache_write = 0
 
         # Agentic loop — capped to prevent runaway cost
         for _turn in range(5):
@@ -75,6 +76,12 @@ class BaseOnChainAgent(ABC):
                 tools=self.tool_definitions,
                 messages=messages,
             )
+
+            u = response.usage
+            total_input       += u.input_tokens
+            total_output      += u.output_tokens
+            total_cache_read  += getattr(u, "cache_read_input_tokens", 0) or 0
+            total_cache_write += getattr(u, "cache_creation_input_tokens", 0) or 0
 
             if response.stop_reason == "end_turn":
                 break
@@ -103,4 +110,14 @@ class BaseOnChainAgent(ABC):
             "[No findings returned]",
         )
 
-        return {"findings": findings, "tool_calls": tool_calls_made}
+        return {
+            "findings": findings,
+            "tool_calls": tool_calls_made,
+            "usage": {
+                "model": MODEL,
+                "input_tokens": total_input,
+                "output_tokens": total_output,
+                "cache_read_tokens": total_cache_read,
+                "cache_write_tokens": total_cache_write,
+            },
+        }

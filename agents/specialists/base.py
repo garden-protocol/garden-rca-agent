@@ -116,6 +116,15 @@ class BaseSpecialist(ABC):
 
         messages = [{"role": "user", "content": user_message}]
         chain = self.chain  # capture for closure in tool execution
+        total_input = total_output = total_cache_read = total_cache_write = 0
+
+        def _accumulate(resp) -> None:
+            nonlocal total_input, total_output, total_cache_read, total_cache_write
+            u = resp.usage
+            total_input       += u.input_tokens
+            total_output      += u.output_tokens
+            total_cache_read  += getattr(u, "cache_read_input_tokens", 0) or 0
+            total_cache_write += getattr(u, "cache_creation_input_tokens", 0) or 0
 
         # Only enable repo tools if at least one repo path exists on disk.
         # In prod without mounted repos, skip directly to a single knowledge-doc-based call.
@@ -137,6 +146,7 @@ class BaseSpecialist(ABC):
                     tools=tool_defs,
                     messages=messages,
                 )
+                _accumulate(response)
 
                 if response.stop_reason == "end_turn":
                     break
@@ -185,6 +195,7 @@ class BaseSpecialist(ABC):
                     system=self._build_system(),
                     messages=messages,
                 )
+                _accumulate(response)
         else:
             # No repos on disk — analyse directly from knowledge docs
             response = client.messages.create(
@@ -193,6 +204,7 @@ class BaseSpecialist(ABC):
                 system=self._build_system(),
                 messages=messages,
             )
+            _accumulate(response)
 
         raw_analysis = next(
             (b.text for b in response.content if b.type == "text"),
@@ -209,6 +221,13 @@ class BaseSpecialist(ABC):
             "severity": structured.get("severity", "medium"),
             "confidence": structured.get("confidence", "low"),
             "raw_analysis": raw_analysis,
+            "usage": {
+                "model": MODEL,
+                "input_tokens": total_input,
+                "output_tokens": total_output,
+                "cache_read_tokens": total_cache_read,
+                "cache_write_tokens": total_cache_write,
+            },
         }
 
 

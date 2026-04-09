@@ -16,6 +16,24 @@ class SwapState(str, Enum):
     UNKNOWN = "Unknown"
 
 
+class AgentTokenUsage(BaseModel):
+    """Token usage and cost for a single agent."""
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+class AICost(BaseModel):
+    """Aggregated token usage and cost across all agents that ran."""
+    log_agent: AgentTokenUsage | None = None
+    onchain_agent: AgentTokenUsage | None = None
+    specialist: AgentTokenUsage | None = None
+    total_cost_usd: float = 0.0
+
+
 class InvestigateRequest(BaseModel):
     """
     Accepts either a raw order ID or a full Garden Finance URL.
@@ -34,5 +52,6 @@ class InvestigateResponse(BaseModel):
     early_return: bool
     reason: str | None = None       # set when early_return is True
     rca_report: RCAReport | None = None  # set when early_return is False and LLM pipeline ran
+    ai_cost: AICost | None = None   # token usage and cost for all LLM calls
     generated_at: datetime
     duration_seconds: float

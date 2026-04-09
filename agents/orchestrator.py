@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 
 from models.alert import Alert
 from models.report import RCAReport
-from models.investigate import SwapState, InvestigateResponse
+from models.investigate import SwapState, InvestigateResponse, AgentTokenUsage, AICost
+from models.pricing import compute_cost
 import agents.log_agent as log_agent
 from agents.specialists.bitcoin import BitcoinSpecialist
 from agents.specialists.evm import EVMSpecialist
@@ -318,7 +319,7 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
     # No early return — escalate to full LLM pipeline
     # ═════════════════════════════════════════════════════════════════════════
     alert = _build_alert_from_order(order_id, order, state, src_chain, dst_chain)
-    rca_report = run(alert)
+    rca_report, ai_cost = run(alert)
 
     return InvestigateResponse(
         order_id=order_id,
@@ -327,6 +328,7 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
         destination_chain=dst_chain,
         early_return=False,
         rca_report=rca_report,
+        ai_cost=ai_cost,
         generated_at=datetime.now(timezone.utc),
         duration_seconds=round(time.monotonic() - started_at, 2),
     )
@@ -389,14 +391,14 @@ def _build_alert_from_order(
 
 # ── Legacy alert-based pipeline ───────────────────────────────────────────────
 
-def run(alert: Alert) -> RCAReport:
+def run(alert: Alert) -> tuple[RCAReport, AICost]:
     """
     Full RCA pipeline:
       1. Enrich alert with order API data (created_at)
       2. Log Intelligence Agent queries Loki
       3. On-Chain Agent queries chain state
       4. Chain Specialist performs root cause analysis
-      5. Orchestrator assembles the final RCAReport
+      5. Orchestrator assembles the final RCAReport + AICost
 
     Failures in any step are non-fatal — the pipeline degrades gracefully.
     """
@@ -405,7 +407,7 @@ def run(alert: Alert) -> RCAReport:
     alert = _enrich_with_order_created_at(alert)
 
     # ── Step 1: Log Intelligence ──────────────────────────────────────────────
-    log_result = {"summary": "[Log agent not run]", "raw_lines": []}
+    log_result = {"summary": "[Log agent not run]", "raw_lines": [], "usage": None}
     try:
         log_result = log_agent.run(alert)
     except Exception as exc:
@@ -423,6 +425,7 @@ def run(alert: Alert) -> RCAReport:
             onchain_result = {
                 "findings": f"[On-chain agent failed: {exc}]",
                 "tool_calls": [],
+                "usage": None,
             }
 
     # ── Step 3: Chain Specialist Analysis ────────────────────────────────────
@@ -437,6 +440,7 @@ def run(alert: Alert) -> RCAReport:
         "severity": "medium",
         "confidence": "low",
         "raw_analysis": "",
+        "usage": None,
     }
     try:
         specialist_result = specialist.analyze(
@@ -455,7 +459,7 @@ def run(alert: Alert) -> RCAReport:
     duration = time.monotonic() - started_at
     log_evidence = _extract_evidence_lines(log_result["raw_lines"])
 
-    return RCAReport(
+    report = RCAReport(
         order_id=alert.order_id,
         chain=alert.chain,
         service=alert.service,
@@ -471,6 +475,21 @@ def run(alert: Alert) -> RCAReport:
         generated_at=datetime.now(timezone.utc),
         duration_seconds=round(duration, 2),
     )
+
+    log_usage      = _build_agent_usage(log_result.get("usage"))
+    onchain_usage  = _build_agent_usage((onchain_result or {}).get("usage"))
+    specialist_usage = _build_agent_usage(specialist_result.get("usage"))
+    total = sum(
+        u.cost_usd for u in (log_usage, onchain_usage, specialist_usage) if u
+    )
+    ai_cost = AICost(
+        log_agent=log_usage,
+        onchain_agent=onchain_usage,
+        specialist=specialist_usage,
+        total_cost_usd=round(total, 6),
+    )
+
+    return report, ai_cost
 
 
 def _enrich_with_order_created_at(alert: Alert) -> Alert:
@@ -518,6 +537,25 @@ def _extract_evidence_lines(raw_lines: list[str]) -> list[str]:
     warnings = [l for l in raw_lines if any(k in l.lower() for k in ("warn", "timeout", "retry"))]
     rest = [l for l in raw_lines if l not in priority and l not in warnings]
     return (priority + warnings + rest)[:20]
+
+
+def _build_agent_usage(raw: dict | None) -> AgentTokenUsage | None:
+    """Convert a raw usage dict returned by an agent into an AgentTokenUsage model."""
+    if not raw:
+        return None
+    model = raw.get("model", "unknown")
+    inp   = raw.get("input_tokens", 0)
+    out   = raw.get("output_tokens", 0)
+    cr    = raw.get("cache_read_tokens", 0)
+    cw    = raw.get("cache_write_tokens", 0)
+    return AgentTokenUsage(
+        model=model,
+        input_tokens=inp,
+        output_tokens=out,
+        cache_read_tokens=cr,
+        cache_write_tokens=cw,
+        cost_usd=round(compute_cost(model, inp, out, cr, cw), 6),
+    )
 
 
 def _serialize_onchain(result: dict | None) -> dict | None:

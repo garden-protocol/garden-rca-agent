@@ -95,6 +95,7 @@ def run(alert: Alert) -> dict:
 
     messages = [{"role": "user", "content": user_message}]
     all_log_lines: list[str] = []
+    total_input = total_output = total_cache_read = total_cache_write = 0
 
     # Agentic loop — capped to prevent runaway cost
     for _turn in range(5):
@@ -107,6 +108,12 @@ def run(alert: Alert) -> dict:
             tools=LOKI_TOOL_DEFINITIONS,
             messages=messages,
         )
+
+        u = response.usage
+        total_input       += u.input_tokens
+        total_output      += u.output_tokens
+        total_cache_read  += getattr(u, "cache_read_input_tokens", 0) or 0
+        total_cache_write += getattr(u, "cache_creation_input_tokens", 0) or 0
 
         if response.stop_reason == "end_turn":
             break
@@ -139,4 +146,11 @@ def run(alert: Alert) -> dict:
     return {
         "summary": summary,
         "raw_lines": all_log_lines[:500],  # cap for downstream context size
+        "usage": {
+            "model": MODEL,
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "cache_read_tokens": total_cache_read,
+            "cache_write_tokens": total_cache_write,
+        },
     }
