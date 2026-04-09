@@ -53,6 +53,24 @@ def _truncate(text: str, limit: int = 1000) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+def _format_cost(ai_cost: dict | None) -> str:
+    """Return a compact cost string for the embed footer / field."""
+    if not ai_cost:
+        return "—"
+    total = ai_cost.get("total_cost_usd", 0.0)
+    parts = []
+    for key, label in (
+        ("log_agent", "log"),
+        ("onchain_agent", "on-chain"),
+        ("specialist", "specialist"),
+    ):
+        agent = ai_cost.get(key)
+        if agent:
+            parts.append(f"{label} ${agent['cost_usd']:.4f}")
+    breakdown = "  |  ".join(parts) if parts else ""
+    return f"**${total:.4f}**" + (f"  ({breakdown})" if breakdown else "")
+
+
 def _build_early_return_embed(data: dict) -> discord.Embed:
     state = _STATE_LABEL.get(data.get("state", ""), data.get("state", "?"))
     src   = data.get("source_chain", "?")
@@ -67,6 +85,7 @@ def _build_early_return_embed(data: dict) -> discord.Embed:
     embed.add_field(name="Order ID", value=f"`{data.get('order_id', '?')}`", inline=False)
     embed.add_field(name="Route",    value=f"{src} → {dst}",               inline=True)
     embed.add_field(name="Duration", value=f"{data.get('duration_seconds', '?')}s", inline=True)
+    embed.add_field(name="AI Cost",  value=_format_cost(data.get("ai_cost")),       inline=True)
     embed.set_footer(text="Garden RCA Agent")
     return embed
 
@@ -93,6 +112,7 @@ def _build_rca_embed(data: dict) -> discord.Embed:
     embed.add_field(name="Order ID", value=f"`{data.get('order_id', '?')}`", inline=False)
     embed.add_field(name="Route",    value=f"{src} → {dst}", inline=True)
     embed.add_field(name="Duration", value=f"{data.get('duration_seconds', '?')}s", inline=True)
+    embed.add_field(name="AI Cost",  value=_format_cost(data.get("ai_cost")),        inline=True)
 
     if components:
         embed.add_field(
