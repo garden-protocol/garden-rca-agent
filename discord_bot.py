@@ -172,7 +172,7 @@ async def investigate(interaction: discord.Interaction, order_id: str):
     logger.info("Investigating order %s via %s", order_id, url)
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as http:
+        async with httpx.AsyncClient(timeout=300.0) as http:
             resp = await http.post(url, json={"order_id": order_id})
             resp.raise_for_status()
             data = resp.json()

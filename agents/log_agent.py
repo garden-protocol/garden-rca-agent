@@ -27,6 +27,9 @@ CRITICAL: Always use the start_iso and end_iso parameters provided in the alert 
 for ALL log queries. Never rely on minutes_back — the time window is anchored to the order \
 creation timestamp, not the current time.
 
+When a solver_id is provided, ALWAYS pass it to search_by_order_id and search_by_service \
+calls. This filters executor logs to the specific solver that handled the order.
+
 Your output should be a structured markdown report with:
 1. **Timeline** — chronological sequence of key events from the logs
 2. **Errors** — list of error messages found, with context
@@ -60,7 +63,9 @@ def run(alert: Alert) -> dict:
 
     now = datetime.now(timezone.utc)
     window_start = order_created_at.isoformat()
-    window_end = min(order_created_at + timedelta(hours=2), now).isoformat()
+    window_end = min(order_created_at + timedelta(hours=1), now).isoformat()
+
+    solver_id = (alert.metadata or {}).get("solver_id", "")
 
     alert_context = (
         f"Order ID: {alert.order_id}\n"
@@ -71,6 +76,7 @@ def run(alert: Alert) -> dict:
         f"Alert message: {alert.message}\n"
         f"Timestamp: {alert.timestamp.isoformat()}\n"
         f"Order created at: {order_created_at.isoformat()}\n"
+        f"Solver ID: {solver_id}\n"
     )
     if alert.deadline:
         alert_context += f"Deadline: {alert.deadline.isoformat()}\n"
@@ -80,10 +86,11 @@ def run(alert: Alert) -> dict:
     user_message = (
         f"Investigate the following alert and query Loki to find relevant logs.\n\n"
         f"Alert details:\n{alert_context}\n\n"
-        f"**IMPORTANT — Time window for all queries:**\n"
+        f"**IMPORTANT — Time window and solver_id for all queries:**\n"
         f"Use start_iso=\"{window_start}\" and end_iso=\"{window_end}\" "
-        f"(order_created_at ± 1 hour) for ALL log queries. "
-        f"Do NOT use minutes_back — always pass explicit start_iso/end_iso.\n\n"
+        f"(order_created_at to created_at + 1 hour) for ALL log queries. "
+        f"Do NOT use minutes_back — always pass explicit start_iso/end_iso.\n"
+        f"{'Always pass solver_id=\"' + solver_id + '\" to narrow executor log queries.' if solver_id else 'No solver_id available for this order.'}\n\n"
         f"**Query strategy:**\n"
         f"1. Search for the order_id across all services using search_by_order_id "
         f"with the time window above.\n"

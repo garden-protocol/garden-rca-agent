@@ -157,6 +157,7 @@ def search_by_order_id(
     start_iso: str | None = None,
     end_iso: str | None = None,
     minutes_back: int = 30,
+    solver_id: str = "",
 ) -> list[str]:
     """
     Search ALL logs (both primary and solver Loki) for a specific order_id.
@@ -166,6 +167,7 @@ def search_by_order_id(
         start_iso: Explicit start time in ISO 8601 format (overrides minutes_back)
         end_iso: Explicit end time in ISO 8601 format (overrides minutes_back)
         minutes_back: Fallback if start_iso/end_iso not provided (default 30)
+        solver_id: Optional solver ID from order response — narrows solver Loki query
 
     Returns:
         Merged list of log lines from both Loki instances containing the order_id
@@ -178,19 +180,23 @@ def search_by_order_id(
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes_back)
 
-    # Query primary Loki (infra logs)
+    # Query primary Loki (infra logs, exclude explorer-api noise)
     primary_lines = _query(
         _primary_url(), _primary_headers(),
-        f'{{job="MAINNET_LOGS"}} |= `{order_id}`',
+        f'{{job="MAINNET_LOGS", container_name!="/explorer-api"}} |= `{order_id}`',
         start, end, limit=500,
     )
 
     # Query solver Loki (executor logs) if configured
     solver_lines: list[str] = []
     if settings.loki_solver_url:
+        if solver_id:
+            selector = f'{{solver_id="{solver_id}"}}'
+        else:
+            selector = '{container=~".+"}'
         solver_lines = _query(
             _solver_url(), _solver_headers(),
-            f'{{container=~".+"}} |= `{order_id}`',
+            f'{selector} |= `{order_id}`',
             start, end, limit=500,
         )
 
@@ -205,6 +211,7 @@ def search_by_service(
     end_iso: str | None = None,
     minutes_back: int = 30,
     level_filter: str = "",
+    solver_id: str = "",
 ) -> list[str]:
     """
     Search logs for a specific service/chain/network combination.
@@ -218,6 +225,7 @@ def search_by_service(
         end_iso: Explicit end time in ISO 8601 format (overrides minutes_back)
         minutes_back: Fallback if start_iso/end_iso not provided
         level_filter: Optional log level filter, e.g. 'error' or 'warn'
+        solver_id: Optional solver ID from order response — narrows solver Loki query
 
     Returns:
         List of matching log lines
@@ -231,10 +239,15 @@ def search_by_service(
         start = end - timedelta(minutes=minutes_back)
 
     if service == "executor":
-        # Route to solver Loki
-        container = _SOLVER_SERVICE_MAP.get(chain)
-        if container:
-            logql = f'{{container="{container}"}}'
+        # Route to solver Loki — use solver_id + service_name when available
+        svc_name = _SOLVER_SERVICE_MAP.get(chain)
+        labels: list[str] = []
+        if solver_id:
+            labels.append(f'solver_id="{solver_id}"')
+        if svc_name:
+            labels.append(f'service_name="{svc_name}"')
+        if labels:
+            logql = "{" + ", ".join(labels) + "}"
         else:
             logql = f'{{}} |= `{chain}-executor`'
         if level_filter:
@@ -317,6 +330,11 @@ LOKI_TOOL_DEFINITIONS = [
                     "description": "Fallback: minutes of history from now (default 30). Ignored if start_iso/end_iso provided.",
                     "default": 30,
                 },
+                "solver_id": {
+                    "type": "string",
+                    "description": "Solver ID from the order response (create_order.solver_id). Narrows solver Loki query to this solver's logs.",
+                    "default": "",
+                },
             },
             "required": ["order_id"],
         },
@@ -365,6 +383,11 @@ LOKI_TOOL_DEFINITIONS = [
                     "description": "Optional log level keyword to filter by, e.g. 'error' or 'warn'",
                     "default": "",
                 },
+                "solver_id": {
+                    "type": "string",
+                    "description": "Solver ID from the order response (create_order.solver_id). Narrows executor queries to this solver's logs.",
+                    "default": "",
+                },
             },
             "required": ["service", "chain", "network"],
         },
@@ -386,6 +409,7 @@ def execute_loki_tool(tool_name: str, tool_input: dict) -> str:
             start_iso=tool_input.get("start_iso"),
             end_iso=tool_input.get("end_iso"),
             minutes_back=tool_input.get("minutes_back", 30),
+            solver_id=tool_input.get("solver_id", ""),
         )
         return "\n".join(lines) if lines else "[No logs found for this order_id]"
 
@@ -398,6 +422,7 @@ def execute_loki_tool(tool_name: str, tool_input: dict) -> str:
             end_iso=tool_input.get("end_iso"),
             minutes_back=tool_input.get("minutes_back", 30),
             level_filter=tool_input.get("level_filter", ""),
+            solver_id=tool_input.get("solver_id", ""),
         )
         return "\n".join(lines) if lines else "[No logs found]"
 
