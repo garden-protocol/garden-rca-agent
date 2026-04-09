@@ -11,6 +11,12 @@ _PRICING: dict[str, dict[str, float]] = {
         "cache_read":  0.08,
         "cache_write": 1.00,
     },
+    "claude-sonnet-4-6": {
+        "input":       3.00,
+        "output":      15.00,
+        "cache_read":  0.30,
+        "cache_write": 3.75,
+    },
     "claude-opus-4-6": {
         "input":       15.00,
         "output":      75.00,

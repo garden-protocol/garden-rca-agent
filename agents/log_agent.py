@@ -58,8 +58,9 @@ def run(alert: Alert) -> dict:
         # Fallback to alert timestamp if order_created_at not available
         order_created_at = alert.timestamp
 
-    window_start = (order_created_at - timedelta(hours=1)).isoformat()
-    window_end = (order_created_at + timedelta(hours=1)).isoformat()
+    now = datetime.now(timezone.utc)
+    window_start = order_created_at.isoformat()
+    window_end = min(order_created_at + timedelta(hours=2), now).isoformat()
 
     alert_context = (
         f"Order ID: {alert.order_id}\n"

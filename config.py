@@ -13,9 +13,13 @@ class Settings(BaseSettings):
     # Server auth — required; set SERVER_SECRET in .env
     server_secret: str
 
-    # Loki (primary)
+    # Loki (primary — infrastructure logs: relayers, watchers, orderbook, etc.)
     loki_url: str = "http://loki.internal:3100"
     loki_auth_token: str = ""
+
+    # Loki solver (executor logs — separate instance)
+    loki_solver_url: str = ""
+    loki_solver_auth_token: str = ""
 
     # Grafana (fallback)
     grafana_url: str = ""

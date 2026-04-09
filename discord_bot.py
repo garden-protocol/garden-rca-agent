@@ -85,8 +85,7 @@ def _build_early_return_embed(data: dict) -> discord.Embed:
     embed.add_field(name="Order ID", value=f"`{data.get('order_id', '?')}`", inline=False)
     embed.add_field(name="Route",    value=f"{src} → {dst}",               inline=True)
     embed.add_field(name="Duration", value=f"{data.get('duration_seconds', '?')}s", inline=True)
-    embed.add_field(name="AI Cost",  value=_format_cost(data.get("ai_cost")),       inline=True)
-    embed.set_footer(text="Garden RCA Agent")
+    embed.set_footer(text="Garden RCA Agent  •  no AI cost (early return)")
     return embed
 
 

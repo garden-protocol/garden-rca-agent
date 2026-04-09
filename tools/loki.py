@@ -1,52 +1,72 @@
 """
 Loki HTTP API client and tool definitions for the Log Intelligence Agent.
-Uses the Loki query_range endpoint directly for best performance.
+
+Two Loki instances:
+  - Primary (LOKI_URL):        infrastructure logs — relayers, watchers, orderbook, etc.
+  - Solver  (LOKI_SOLVER_URL): executor logs — solana-executor, evm-executor, btc-executor, etc.
+
+search_by_order_id queries both and merges results.
+search_by_service routes to the correct instance based on service type.
 """
+import base64
 import httpx
 from datetime import datetime, timezone
 from config import settings
 
 
-def _loki_headers() -> dict:
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+def _make_headers(token: str) -> dict:
+    """Build Authorization header, detecting Basic vs Bearer from token content."""
     headers = {"Content-Type": "application/json"}
-    if settings.loki_auth_token:
-        headers["Authorization"] = f"Bearer {settings.loki_auth_token}"
-    elif settings.grafana_api_key:
-        # Grafana basic auth fallback: user is always "api_key"
-        import base64
-        creds = base64.b64encode(f"api_key:{settings.grafana_api_key}".encode()).decode()
-        headers["Authorization"] = f"Basic {creds}"
+    if not token:
+        return headers
+    try:
+        decoded = base64.b64decode(token).decode()
+        auth_type = "Basic" if ":" in decoded else "Bearer"
+    except Exception:
+        auth_type = "Bearer"
+    headers["Authorization"] = f"{auth_type} {token}"
     return headers
 
 
-def _loki_base_url() -> str:
-    # Prefer direct Loki; fallback to Grafana proxy
+def _primary_headers() -> dict:
+    if settings.loki_auth_token:
+        return _make_headers(settings.loki_auth_token)
+    if settings.grafana_api_key:
+        creds = base64.b64encode(f"api_key:{settings.grafana_api_key}".encode()).decode()
+        return {"Content-Type": "application/json", "Authorization": f"Basic {creds}"}
+    return {"Content-Type": "application/json"}
+
+
+def _solver_headers() -> dict:
+    return _make_headers(settings.loki_solver_auth_token)
+
+
+def _primary_url() -> str:
     if settings.loki_url:
         return settings.loki_url
     if settings.grafana_url:
         return f"{settings.grafana_url}/api/datasources/proxy/1"
-    raise RuntimeError("No Loki or Grafana URL configured")
+    raise RuntimeError("No Loki URL configured")
 
+
+def _solver_url() -> str:
+    if not settings.loki_solver_url:
+        raise RuntimeError("LOKI_SOLVER_URL not configured")
+    return settings.loki_solver_url
+
+
+# ── Core query ────────────────────────────────────────────────────────────────
 
 def _to_ns(dt: datetime) -> str:
     """Convert datetime to nanosecond epoch string for Loki."""
     return str(int(dt.timestamp() * 1e9))
 
 
-def query_loki(logql: str, start: datetime, end: datetime, limit: int = 200) -> list[str]:
-    """
-    Run a LogQL query against Loki and return matching log lines.
-
-    Args:
-        logql: LogQL query string, e.g. '{service="executor",chain="bitcoin"} |= "error"'
-        start: Query start time
-        end: Query end time
-        limit: Max number of log lines to return (default 200)
-
-    Returns:
-        List of log line strings, ordered oldest-first
-    """
-    url = f"{_loki_base_url()}/loki/api/v1/query_range"
+def _query(base_url: str, headers: dict, logql: str, start: datetime, end: datetime, limit: int) -> list[str]:
+    """Low-level LogQL query against a Loki instance."""
+    url = f"{base_url}/loki/api/v1/query_range"
     params = {
         "query": logql,
         "start": _to_ns(start),
@@ -55,11 +75,10 @@ def query_loki(logql: str, start: datetime, end: datetime, limit: int = 200) -> 
         "direction": "forward",
     }
     try:
-        resp = httpx.get(url, params=params, headers=_loki_headers(), timeout=30)
+        resp = httpx.get(url, params=params, headers=headers, timeout=30)
         resp.raise_for_status()
-        data = resp.json()
         lines = []
-        for stream in data.get("data", {}).get("result", []):
+        for stream in resp.json().get("data", {}).get("result", []):
             for _ts, line in stream.get("values", []):
                 lines.append(line)
         return lines
@@ -69,6 +88,70 @@ def query_loki(logql: str, start: datetime, end: datetime, limit: int = 200) -> 
         return [f"[LOKI ERROR] {type(e).__name__}: {e}"]
 
 
+def query_loki(logql: str, start: datetime, end: datetime, limit: int = 200) -> list[str]:
+    """
+    Run a raw LogQL query against the primary Loki (infrastructure logs).
+
+    Args:
+        logql: LogQL query string
+        start: Query start time
+        end: Query end time
+        limit: Max log lines to return (default 200)
+
+    Returns:
+        List of log line strings, ordered oldest-first
+    """
+    return _query(_primary_url(), _primary_headers(), logql, start, end, limit)
+
+
+def query_solver_loki(logql: str, start: datetime, end: datetime, limit: int = 200) -> list[str]:
+    """
+    Run a raw LogQL query against the solver Loki (executor logs).
+
+    Args:
+        logql: LogQL query string
+        start: Query start time
+        end: Query end time
+        limit: Max log lines to return (default 200)
+
+    Returns:
+        List of log line strings, ordered oldest-first
+    """
+    return _query(_solver_url(), _solver_headers(), logql, start, end, limit)
+
+
+# ── Service → container name mappings ─────────────────────────────────────────
+
+# Primary Loki: infrastructure services
+_PRIMARY_SERVICE_MAP: dict[tuple[str, str], str] = {
+    ("relayer", "evm"):      "/evm-relayer-mainnet",
+    ("watcher", "evm"):      "/evm-watcher-mainnet",
+    ("relayer", "solana"):   "/solana-relayer-mainnet",
+    ("watcher", "solana"):   "/solana-watcher-mainnet",
+    ("watcher", "bitcoin"):  "/bitcoin-indexer-v2",
+    ("relayer", "tron"):     "/tron-relayer-mainnet",
+    ("watcher", "tron"):     "/tron-watcher",
+    ("watcher", "starknet"): "/starknet-watcher-mainnet",
+    ("watcher", "spark"):    "/spark-watcher-mainnet",
+    ("watcher", "litecoin"): "/litecoin-services-mainnet",
+}
+
+# Solver Loki: executor services (label is `container`, not `service_name`)
+_SOLVER_SERVICE_MAP: dict[str, str] = {
+    "solana":   "solana-executor",
+    "evm":      "evm-executor",
+    "bitcoin":  "btc-executor",
+    "litecoin": "litecoin-executor",
+    "tron":     "tron-executor",
+    "starknet": "starknet-executor",
+    "spark":    "spark-executor",
+    "alpen":    "alpen-executor",
+    "xrpl":     "xrpl-executor",
+}
+
+
+# ── High-level search functions ───────────────────────────────────────────────
+
 def search_by_order_id(
     order_id: str,
     start_iso: str | None = None,
@@ -76,7 +159,7 @@ def search_by_order_id(
     minutes_back: int = 30,
 ) -> list[str]:
     """
-    Search all logs for a specific order_id across all services.
+    Search ALL logs (both primary and solver Loki) for a specific order_id.
 
     Args:
         order_id: The order ID to search for
@@ -85,7 +168,7 @@ def search_by_order_id(
         minutes_back: Fallback if start_iso/end_iso not provided (default 30)
 
     Returns:
-        List of log lines containing the order_id
+        Merged list of log lines from both Loki instances containing the order_id
     """
     from datetime import timedelta
     if start_iso and end_iso:
@@ -94,8 +177,24 @@ def search_by_order_id(
     else:
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes_back)
-    logql = f'{{}} |= `{order_id}`'
-    return query_loki(logql, start, end, limit=500)
+
+    # Query primary Loki (infra logs)
+    primary_lines = _query(
+        _primary_url(), _primary_headers(),
+        f'{{job="MAINNET_LOGS"}} |= `{order_id}`',
+        start, end, limit=500,
+    )
+
+    # Query solver Loki (executor logs) if configured
+    solver_lines: list[str] = []
+    if settings.loki_solver_url:
+        solver_lines = _query(
+            _solver_url(), _solver_headers(),
+            f'{{container=~".+"}} |= `{order_id}`',
+            start, end, limit=500,
+        )
+
+    return primary_lines + solver_lines
 
 
 def search_by_service(
@@ -109,10 +208,11 @@ def search_by_service(
 ) -> list[str]:
     """
     Search logs for a specific service/chain/network combination.
+    Routes executor queries to solver Loki; all others to primary Loki.
 
     Args:
         service: Service name (executor, watcher, relayer)
-        chain: Chain name (bitcoin, evm, solana)
+        chain: Chain name (bitcoin, evm, solana, tron, starknet, ...)
         network: Network (mainnet, testnet)
         start_iso: Explicit start time in ISO 8601 format (overrides minutes_back)
         end_iso: Explicit end time in ISO 8601 format (overrides minutes_back)
@@ -130,22 +230,41 @@ def search_by_service(
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes_back)
 
-    # Build label selector — adjust these label names to match your Loki setup
-    logql = f'{{service="{service}", chain="{chain}", network="{network}"}}'
-    if level_filter:
-        logql += f' |= `{level_filter}`'
+    if service == "executor":
+        # Route to solver Loki
+        container = _SOLVER_SERVICE_MAP.get(chain)
+        if container:
+            logql = f'{{container="{container}"}}'
+        else:
+            logql = f'{{}} |= `{chain}-executor`'
+        if level_filter:
+            logql += f' |= `{level_filter}`'
+        return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
 
-    return query_loki(logql, start, end, limit=300)
+    else:
+        # Route to primary Loki
+        container = _PRIMARY_SERVICE_MAP.get((service, chain))
+        if container:
+            logql = f'{{service_name="{container}"}}'
+        else:
+            logql = f'{{job="MAINNET_LOGS"}}'
+            if not level_filter:
+                level_filter = f"{chain}-{service}"
+        if level_filter:
+            logql += f' |= `{level_filter}`'
+        return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
 
 
-# Tool definitions for Claude (raw JSON schema format)
+# ── Tool definitions for Claude ───────────────────────────────────────────────
+
 LOKI_TOOL_DEFINITIONS = [
     {
         "name": "query_loki",
         "description": (
-            "Run a raw LogQL query against Loki and return matching log lines. "
-            "Use this for precise queries with specific label selectors and filters. "
-            "Example: '{service=\"executor\", chain=\"bitcoin\"} |= \"error\" | json'"
+            "Run a raw LogQL query against the PRIMARY Loki instance (infrastructure logs: "
+            "relayers, watchers, orderbook, screener, explorer). "
+            "For executor logs use search_by_service with service='executor'. "
+            "Example: '{service_name=\"/evm-relayer-mainnet\"} |= \"error\"'"
         ),
         "input_schema": {
             "type": "object",
@@ -174,9 +293,9 @@ LOKI_TOOL_DEFINITIONS = [
     {
         "name": "search_by_order_id",
         "description": (
-            "Search all Loki logs for a specific order_id. "
-            "Returns log lines from all services that mention this order. "
-            "Prefer using start_iso/end_iso over minutes_back for precise time windows."
+            "Search ALL logs (both infrastructure and executor Loki) for a specific order_id. "
+            "Returns merged log lines from every service that mentions this order. "
+            "Always use start_iso/end_iso anchored to order created_at for precise results."
         ),
         "input_schema": {
             "type": "object",
@@ -205,9 +324,10 @@ LOKI_TOOL_DEFINITIONS = [
     {
         "name": "search_by_service",
         "description": (
-            "Search logs for a specific service, chain, and network combination. "
-            "Optionally filter by log level (error, warn, info). "
-            "Prefer using start_iso/end_iso over minutes_back for precise time windows."
+            "Search logs for a specific service, chain, and network. "
+            "Automatically routes executor queries to the solver Loki instance. "
+            "Optionally filter by log level keyword (error, warn, info). "
+            "Always use start_iso/end_iso anchored to order created_at."
         ),
         "input_schema": {
             "type": "object",
@@ -219,7 +339,7 @@ LOKI_TOOL_DEFINITIONS = [
                 },
                 "chain": {
                     "type": "string",
-                    "enum": ["bitcoin", "evm", "solana"],
+                    "enum": ["bitcoin", "evm", "solana", "tron", "starknet", "spark", "litecoin"],
                     "description": "The chain to query logs for",
                 },
                 "network": {
