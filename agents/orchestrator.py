@@ -50,90 +50,31 @@ _ONCHAIN_AGENTS = {
 }
 
 
-# ── Refund reason inference ───────────────────────────────────────────────────
+# ── Refund context for LLM pipeline ──────────────────────────────────────────
 
-def _refund_reason(
+def _refund_context(
     src: "SwapData",
     dst: "SwapData",
     co: "CreateOrder",
 ) -> str:
     """
-    Infer *why* an order was refunded from the on-chain state captured in the
-    order API response.  Returns a human-readable explanation.
+    Build concise context about a refunded order for the LLM pipeline.
+    Describes which side(s) were refunded and observable state.
     """
-    from models.order import SwapData, CreateOrder  # deferred to avoid circular import
+    parts: list[str] = []
+    if src.is_refunded:
+        parts.append(f"Source refunded (tx: {src.refund_tx_hash}).")
+    if dst.is_refunded:
+        parts.append(f"Destination refunded (tx: {dst.refund_tx_hash}).")
 
-    parts: list[str] = ["Order has been refunded."]
-
-    # ── Which side(s) were refunded? ──────────────────────────────────────
-    src_refunded = src.is_refunded
-    dst_refunded = dst.is_refunded
-
-    if src_refunded and dst_refunded:
-        parts.append(
-            "Both source and destination HTLCs were refunded — "
-            "the user did not redeem the destination HTLC before its timelock expired, "
-            "so both sides were reclaimed."
-        )
-    elif src_refunded and not dst.is_initiated:
-        # Solver never initiated on destination → source timed out.
-        ad = co.additional_data
-        reasons: list[str] = []
-        if ad.is_blacklisted:
-            reasons.append("the order was blacklisted")
-        if ad.deadline and src.initiate_timestamp:
-            init_ts = src.initiate_timestamp
-            if init_ts.tzinfo is None:
-                from datetime import timezone as _tz
-                init_ts = init_ts.replace(tzinfo=_tz.utc)
-            if int(init_ts.timestamp()) > ad.deadline:
-                reasons.append(
-                    "the source initiate timestamp exceeded the solver deadline"
-                )
-        if reasons:
-            detail = "; ".join(reasons)
-            parts.append(
-                f"Solver never initiated on destination ({detail}), "
-                f"so the source HTLC timelock expired and funds were refunded to the user."
-            )
-        else:
-            parts.append(
-                "Solver did not initiate on destination (possible causes: insufficient "
-                "liquidity, price movement, solver downtime, or deadline exceeded). "
-                "The source HTLC timelock expired and funds were refunded to the user."
-            )
-    elif src_refunded and dst.is_initiated and not dst.is_redeemed:
-        parts.append(
-            "Destination was initiated but the user did not redeem in time. "
-            "The source HTLC timelock expired and funds were refunded."
-        )
-    elif src_refunded and dst.is_redeemed:
-        parts.append(
-            "Source was refunded even though destination was redeemed — "
-            "this is unusual and may indicate a race condition between "
-            "the source timelock expiry and the solver's redeem attempt."
-        )
-    elif dst_refunded and not src_refunded:
-        if src.is_redeemed:
-            parts.append(
-                "Destination HTLC was refunded but source was redeemed successfully. "
-                "The solver reclaimed destination funds after the destination "
-                "timelock expired (user did not redeem in time)."
-            )
-        else:
-            parts.append(
-                "Destination HTLC was refunded. The solver reclaimed destination "
-                "funds after the timelock expired."
-            )
-
-    # ── Append refund tx details ──────────────────────────────────────────
-    tx_details: list[str] = []
-    if src_refunded:
-        tx_details.append(f"source refund tx: {src.refund_tx_hash}")
-    if dst_refunded:
-        tx_details.append(f"destination refund tx: {dst.refund_tx_hash}")
-    if tx_details:
-        parts.append(f"Refund transaction(s): {'; '.join(tx_details)}.")
+    if src.is_refunded and not dst.is_initiated:
+        parts.append("Solver never initiated on destination.")
+        if co.additional_data.is_blacklisted:
+            parts.append("Order was blacklisted.")
+    elif src.is_refunded and dst.is_initiated and not dst.is_redeemed:
+        parts.append("Destination was initiated but never redeemed.")
+    elif src.is_refunded and dst.is_redeemed:
+        parts.append("Destination was redeemed but source was still refunded.")
 
     return " ".join(parts)
 
@@ -195,7 +136,25 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
 
     # ── Refund check (before any state-specific logic) ─────────────────────
     if src.is_refunded or dst.is_refunded:
-        return _early(_refund_reason(src, dst, co))
+        state = SwapState.REFUNDED
+        refund_context = _refund_context(src, dst, co)
+        alert = _build_alert_from_order(order_id, order, state, src_chain, dst_chain)
+        alert.message = (
+            f"Order {order_id} has been refunded. {refund_context} "
+            f"Investigate logs and on-chain data to determine the root cause."
+        )
+        rca_report, ai_cost = run(alert)
+        return InvestigateResponse(
+            order_id=order_id,
+            state=state,
+            source_chain=src_chain,
+            destination_chain=dst_chain,
+            early_return=False,
+            rca_report=rca_report,
+            ai_cost=ai_cost,
+            generated_at=datetime.now(timezone.utc),
+            duration_seconds=round(time.monotonic() - started_at, 2),
+        )
 
     # ── No user init (pre-state check) ───────────────────────────────────────
     if not src.is_initiated:
@@ -440,7 +399,14 @@ def _build_alert_from_order(
     src = result.source_swap
 
     # Decide which chain's service is responsible based on stuck state
-    if state == SwapState.DEST_INIT_PENDING:
+    if state == SwapState.REFUNDED:
+        # For refunds: investigate the destination chain executor (solver side)
+        # since the most common refund cause is solver failing to initiate.
+        dst = result.destination_swap
+        chain = dst_chain if not dst.is_initiated else src_chain
+        service = "executor"
+        alert_type = "refunded"
+    elif state == SwapState.DEST_INIT_PENDING:
         chain = dst_chain
         service = "executor"
         alert_type = "missed_init"

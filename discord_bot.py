@@ -45,6 +45,7 @@ _STATE_LABEL = {
     "UserRedeemPending":    "User Redeem Pending",
     "SolverRedeemPending":  "Solver Redeem Pending",
     "UserNotInited":        "User Not Inited",
+    "Refunded":             "Refunded",
     "Unknown":              "Unknown",
 }
 

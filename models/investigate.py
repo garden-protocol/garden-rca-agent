@@ -13,6 +13,7 @@ class SwapState(str, Enum):
     DEST_INIT_PENDING = "DestInitPending"
     USER_REDEEM_PENDING = "UserRedeemPending"
     SOLVER_REDEEM_PENDING = "SolverRedeemPending"
+    REFUNDED = "Refunded"
     UNKNOWN = "Unknown"
 
 
