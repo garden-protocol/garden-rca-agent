@@ -50,6 +50,94 @@ _ONCHAIN_AGENTS = {
 }
 
 
+# ── Refund reason inference ───────────────────────────────────────────────────
+
+def _refund_reason(
+    src: "SwapData",
+    dst: "SwapData",
+    co: "CreateOrder",
+) -> str:
+    """
+    Infer *why* an order was refunded from the on-chain state captured in the
+    order API response.  Returns a human-readable explanation.
+    """
+    from models.order import SwapData, CreateOrder  # deferred to avoid circular import
+
+    parts: list[str] = ["Order has been refunded."]
+
+    # ── Which side(s) were refunded? ──────────────────────────────────────
+    src_refunded = src.is_refunded
+    dst_refunded = dst.is_refunded
+
+    if src_refunded and dst_refunded:
+        parts.append(
+            "Both source and destination HTLCs were refunded — "
+            "the user did not redeem the destination HTLC before its timelock expired, "
+            "so both sides were reclaimed."
+        )
+    elif src_refunded and not dst.is_initiated:
+        # Solver never initiated on destination → source timed out.
+        ad = co.additional_data
+        reasons: list[str] = []
+        if ad.is_blacklisted:
+            reasons.append("the order was blacklisted")
+        if ad.deadline and src.initiate_timestamp:
+            init_ts = src.initiate_timestamp
+            if init_ts.tzinfo is None:
+                from datetime import timezone as _tz
+                init_ts = init_ts.replace(tzinfo=_tz.utc)
+            if int(init_ts.timestamp()) > ad.deadline:
+                reasons.append(
+                    "the source initiate timestamp exceeded the solver deadline"
+                )
+        if reasons:
+            detail = "; ".join(reasons)
+            parts.append(
+                f"Solver never initiated on destination ({detail}), "
+                f"so the source HTLC timelock expired and funds were refunded to the user."
+            )
+        else:
+            parts.append(
+                "Solver did not initiate on destination (possible causes: insufficient "
+                "liquidity, price movement, solver downtime, or deadline exceeded). "
+                "The source HTLC timelock expired and funds were refunded to the user."
+            )
+    elif src_refunded and dst.is_initiated and not dst.is_redeemed:
+        parts.append(
+            "Destination was initiated but the user did not redeem in time. "
+            "The source HTLC timelock expired and funds were refunded."
+        )
+    elif src_refunded and dst.is_redeemed:
+        parts.append(
+            "Source was refunded even though destination was redeemed — "
+            "this is unusual and may indicate a race condition between "
+            "the source timelock expiry and the solver's redeem attempt."
+        )
+    elif dst_refunded and not src_refunded:
+        if src.is_redeemed:
+            parts.append(
+                "Destination HTLC was refunded but source was redeemed successfully. "
+                "The solver reclaimed destination funds after the destination "
+                "timelock expired (user did not redeem in time)."
+            )
+        else:
+            parts.append(
+                "Destination HTLC was refunded. The solver reclaimed destination "
+                "funds after the timelock expired."
+            )
+
+    # ── Append refund tx details ──────────────────────────────────────────
+    tx_details: list[str] = []
+    if src_refunded:
+        tx_details.append(f"source refund tx: {src.refund_tx_hash}")
+    if dst_refunded:
+        tx_details.append(f"destination refund tx: {dst.refund_tx_hash}")
+    if tx_details:
+        parts.append(f"Refund transaction(s): {'; '.join(tx_details)}.")
+
+    return " ".join(parts)
+
+
 # ── Investigation pipeline ────────────────────────────────────────────────────
 
 def investigate(raw_order_id: str) -> InvestigateResponse:
@@ -104,6 +192,10 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
             f"Unsupported chain(s) for investigation: {unsupported_csv}. "
             f"Supported chains: {supported_csv}"
         )
+
+    # ── Refund check (before any state-specific logic) ─────────────────────
+    if src.is_refunded or dst.is_refunded:
+        return _early(_refund_reason(src, dst, co))
 
     # ── No user init (pre-state check) ───────────────────────────────────────
     if not src.is_initiated:
@@ -308,8 +400,6 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
         both_redeemed = src.is_redeemed and dst.is_redeemed
         if both_redeemed:
             return _early("Order has already completed successfully (both sides redeemed).")
-        if src.is_refunded or dst.is_refunded:
-            return _early("Order has been refunded — no further action needed.")
         return _early(
             "Unable to classify order into a known stuck state. "
             "Manual investigation required."

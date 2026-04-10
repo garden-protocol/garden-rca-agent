@@ -102,16 +102,22 @@ class BaseSpecialist(ABC):
             f"Using the knowledge base, source code tools, and the above evidence, "
             f"perform a full root cause analysis. Read relevant source files to understand "
             f"exact code paths involved. Identify:\n"
-            f"1. Root cause (be specific — name files and line numbers where possible)\n"
+            f"1. Root cause — one or two sentences, be specific (name files and line numbers)\n"
             f"2. Affected components\n"
-            f"3. Suggested actions to resolve and prevent recurrence\n"
+            f"3. Suggested actions (exactly 3 to 5) — each action must be a single concise "
+            f"sentence starting with a verb (e.g. 'Restart …', 'Clear …', 'Verify …'). "
+            f"No sub-bullets, no explanations, no caveats.\n"
             f"4. Severity: critical / high / medium / low\n"
             f"5. Confidence in your diagnosis: high / medium / low\n\n"
+            f"Keep the entire analysis direct and concise — avoid filler, repetition, "
+            f"and excessive detail. State the root cause clearly and move on.\n\n"
             f"End your response with a JSON block containing these fields:\n"
             f"```json\n"
             f'{{"root_cause": "...", "affected_components": [...], '
             f'"suggested_actions": [...], "severity": "...", "confidence": "..."}}\n'
-            f"```"
+            f"```\n"
+            f"IMPORTANT: The root_cause field must be 1-2 sentences max — state the cause "
+            f"and the effect, nothing else. suggested_actions must have 3-5 items."
         )
 
         messages = [{"role": "user", "content": user_message}]

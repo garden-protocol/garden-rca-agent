@@ -121,6 +121,7 @@ def _build_rca_embed(data: dict) -> discord.Embed:
         )
 
     if actions:
+        actions = actions[:5]  # hard cap at 5 actions
         embed.add_field(
             name="Suggested Actions",
             value=_truncate("\n".join(f"{i+1}. {a}" for i, a in enumerate(actions)), 1024),
