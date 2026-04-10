@@ -63,6 +63,17 @@ The knowledge doc you generate must cover:
 - For each alert_type (missed_init, deadline_approaching, etc.):
   What should an on-chain agent check? What confirms or rules out each hypothesis?
 
+## 8. Shared Library Internals
+If shared libraries (blockchain_lib, garden_rs) are included in the repos:
+- Key types, functions, and error definitions from shared libraries
+- HTLC construction details: script building, address derivation, Tapscript leaf structure
+- Fee estimation logic: fee providers, fee levels, estimation formulas
+- Transaction batching: RBF/CPFP strategies, batch lifecycle, error conditions
+- Indexer interface: how on-chain data is fetched, retry/caching behavior
+- EVM HTLC contract interaction: initiate/redeem/refund call construction, multicall batching
+- Error types defined in shared libraries that surface in service logs
+- Orderbook primitives: order types, swap states, matched order structures
+
 Be thorough. Use the repo tools to read actual source code — don't guess.
 Skip test files, vendor directories, and generated protobuf files.
 Focus on: entry points, core logic, error handling, constants, config.
@@ -121,25 +132,51 @@ def run(chain: str) -> str:
             f"```yaml\n{incidents_path.read_text()}\n```\n"
         )
 
+    # Separate shared libraries from service repos for clearer instructions
+    shared_lib_names = {"blockchain_lib", "garden_rs"}
+    service_repos = {k: v for k, v in repo_map.items() if k not in shared_lib_names}
+    library_repos = {k: v for k, v in repo_map.items() if k in shared_lib_names}
+
     # Describe each repo to the agent (include branch so it's in the knowledge doc)
-    repo_listing = "\n".join(
+    service_listing = "\n".join(
         f"  - repo='{component}' → {path} (branch: {branch_map.get(component, 'staging')})"
-        for component, path in repo_map.items()
+        for component, path in service_repos.items()
     )
+    library_listing = "\n".join(
+        f"  - repo='{component}' → {path} (branch: {branch_map.get(component, 'main')})"
+        for component, path in library_repos.items()
+    ) if library_repos else ""
+
+    library_guidance = ""
+    if library_repos:
+        library_guidance = (
+            f"\n\nShared libraries ({len(library_repos)} repos — these are imported by the service repos above):\n"
+            f"{library_listing}\n"
+            f"For blockchain_lib (Go): focus on btc/ (htlc.go, scripts.go, fee.go, batcher.go, "
+            f"cpfp.go, rbf.go, wallet.go, indexer.go, event.go) and evm/ (htlc.go, client.go). "
+            f"For garden_rs (Rust): focus on crates/bitcoin/src/htlc/, crates/evm/src/htlc/, "
+            f"crates/evm/src/errors.rs, crates/orderbook/src/primitives.rs, crates/primitives/src/. "
+            f"These libraries contain the actual HTLC script construction, fee estimation, "
+            f"tx batching (RBF/CPFP), and error types — critical for root cause analysis."
+        )
 
     user_message = (
-        f"Study all {chain} service repos. There are {len(repo_map)} component repos:\n"
-        f"{repo_listing}\n\n"
+        f"Study all {chain} service repos and shared libraries. "
+        f"There are {len(service_repos)} service repos:\n"
+        f"{service_listing}"
+        f"{library_guidance}\n\n"
         f"Use the 'repo' parameter in your tools to switch between components. "
         f"Start by listing the root directory of each repo to understand the project structure. "
         f"Then systematically read the most important files in each — entry points, core logic, "
         f"error handling, fee estimation, retry logic, and configuration. "
-        f"Skip: vendor/, node_modules/, *_test.go, *.pb.go, *.generated.*, dist/, build/\n"
+        f"Skip: vendor/, node_modules/, *_test.go, *.pb.go, *.generated.*, dist/, build/, target/\n"
         f"{incidents_context}\n"
         f"After reading enough to have a comprehensive understanding of ALL components, "
-        f"write a single detailed knowledge document following the 7-section structure from "
+        f"write a single detailed knowledge document following the 8-section structure from "
         f"your instructions. Cover each component (executor, watcher(s), relayer, htlc) in context "
         f"— how they interact, where they hand off to each other, and how failures propagate. "
+        f"For shared libraries, document the key functions, types, and error definitions that "
+        f"service repos depend on — especially HTLC construction, fee logic, and tx batching. "
         f"Be specific — include function names, file paths (with repo prefix), and actual constant values."
     )
 
@@ -150,7 +187,8 @@ def run(chain: str) -> str:
     messages = [{"role": "user", "content": user_message}]
 
     # Agentic loop with repo tools — capped to prevent runaway cost
-    for _turn in range(5):
+    # 8 turns to allow thorough coverage of service repos + shared libraries
+    for _turn in range(8):
         response = client.messages.create(
             model=MODEL,
             max_tokens=16000,

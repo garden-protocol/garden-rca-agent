@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     repo_solana_native_swaps: str = "/opt/repos/solana-native-swaps"
     repo_solana_spl_swaps: str = "/opt/repos/solana-spl-swaps"
 
+    # Shared library paths (used by multiple chains)
+    repo_blockchain: str = "/opt/repos/blockchain"
+    repo_garden_rs: str = "/opt/repos/garden-rs"
+
     # Branch overrides per component (default: "staging")
     # Only set these when a component uses a different branch than staging
     branch_bitcoin_executor: str = "staging"
@@ -65,6 +69,10 @@ class Settings(BaseSettings):
     branch_solana_relayer: str = "staging"
     branch_solana_native_swaps: str = "dev"
     branch_solana_spl_swaps: str = "dev"
+
+    # Shared library branches
+    branch_blockchain: str = "main"
+    branch_garden_rs: str = "main"
 
     # Bitcoin RPC
     bitcoin_rpc_url: str = ""
@@ -130,12 +138,16 @@ class Settings(BaseSettings):
                 "watcher_cobi": self.branch_bitcoin_watcher_cobi,
                 "watcher_zmq": self.branch_bitcoin_watcher_zmq,
                 "relayer": self.branch_bitcoin_relayer,
+                "blockchain_lib": self.branch_blockchain,
+                "garden_rs": self.branch_garden_rs,
             },
             "evm": {
                 "executor": self.branch_evm_executor,
                 "watcher": self.branch_evm_watcher,
                 "relayer": self.branch_evm_relayer,
                 "htlc": self.branch_evm_htlc,
+                "blockchain_lib": self.branch_blockchain,
+                "garden_rs": self.branch_garden_rs,
             },
             "solana": {
                 "executor": self.branch_solana_executor,
@@ -150,6 +162,7 @@ class Settings(BaseSettings):
         """
         Returns all component repos for a chain as {component_name: path}.
         Used by study agent and specialist tools to navigate multiple repos.
+        Includes shared libraries (blockchain, garden-rs) for chains that use them.
         """
         return {
             "bitcoin": {
@@ -157,12 +170,16 @@ class Settings(BaseSettings):
                 "watcher_cobi": self.repo_bitcoin_watcher_cobi,
                 "watcher_zmq": self.repo_bitcoin_watcher_zmq,
                 "relayer": self.repo_bitcoin_relayer,
+                "blockchain_lib": self.repo_blockchain,
+                "garden_rs": self.repo_garden_rs,
             },
             "evm": {
                 "executor": self.repo_evm_executor,
                 "watcher": self.repo_evm_watcher,
                 "relayer": self.repo_evm_relayer,
                 "htlc": self.repo_evm_htlc,
+                "blockchain_lib": self.repo_blockchain,
+                "garden_rs": self.repo_garden_rs,
             },
             "solana": {
                 "executor": self.repo_solana_executor,
