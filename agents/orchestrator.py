@@ -138,9 +138,22 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
     if src.is_refunded or dst.is_refunded:
         state = SwapState.REFUNDED
         refund_context = _refund_context(src, dst, co)
+        # Compute order lifetime from created_at to deadline (not to now)
+        lifetime_str = ""
+        deadline_unix = co.additional_data.deadline
+        if deadline_unix:
+            created_ts = result.created_at
+            if created_ts.tzinfo is None:
+                created_ts = created_ts.replace(tzinfo=timezone.utc)
+            lifetime_secs = deadline_unix - int(created_ts.timestamp())
+            if lifetime_secs > 0:
+                lifetime_mins = lifetime_secs / 60
+                lifetime_str = (
+                    f"Order lifetime (created_at to deadline): {lifetime_mins:.0f} minutes. "
+                )
         alert = _build_alert_from_order(order_id, order, state, src_chain, dst_chain)
         alert.message = (
-            f"Order {order_id} has been refunded. {refund_context} "
+            f"Order {order_id} has been refunded. {lifetime_str}{refund_context} "
             f"Investigate logs and on-chain data to determine the root cause."
         )
         rca_report, ai_cost = run(alert)
@@ -441,6 +454,9 @@ def _build_alert_from_order(
             "src_initiate_tx_hash": src.initiate_tx_hash,
             "secret_hash": src.secret_hash,
             "stuck_state": state.value,
+            "deadline": co.additional_data.deadline,
+            "source_timelock": src.timelock,
+            "destination_timelock": result.destination_swap.timelock,
         },
     )
 
