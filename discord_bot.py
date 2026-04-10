@@ -66,9 +66,9 @@ def _format_cost(ai_cost: dict | None) -> str:
         ("specialist", "specialist"),
     ):
         agent = ai_cost.get(key)
-        if agent:
-            parts.append(f"{label} ${agent['cost_usd']:.4f}")
-    breakdown = "  |  ".join(parts) if parts else ""
+        cost = agent["cost_usd"] if agent else 0.0
+        parts.append(f"{label} ${cost:.4f}")
+    breakdown = "  |  ".join(parts)
     return f"**${total:.4f}**" + (f"  ({breakdown})" if breakdown else "")
 
 
