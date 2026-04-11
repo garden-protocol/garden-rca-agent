@@ -748,4 +748,72 @@ vault = findProgramAddressSync(
 
 **Executor filler wallet balance check**:
 - If filler balance is low: SPL initiations fail (can't pay rent for PDAs), ATA creations fail.
+
+---
+
+## 9. Investigation Runbooks
+
+### 9.1 DestInitPending Investigation (Solana as destination)
+1. **Solver-engine**: Was order mapped to Initiate? Check for NoOp or ORDER_MAPPING_FAILED
+2. **Executor basicInitiateChecks** (orderHandler.ts):
+   - initiate_block_number > 0? If not: source watcher failed to write it. Check source watcher.
+   - amount === filled_amount? If not: source watcher mismatch. Verify on-chain.
+   - current_confirmations >= required_confirmations? If not: wait for source chain.
+   - Deadline exceeded? If yes: order expired, instant refund may trigger after DEADLINE_BUFFER (30min).
+3. **Price protection** (hasPriceProtectionFailed): Combined system loss exceeds price_threshold (default 1%), or output price dropped, or quote service returned zero/negative prices. Check quote_server_url health.
+4. **Validator service** (validatorService.ts): Cross-executor validation via executor registry. Check if source chain executor is running and registered.
+5. **HTLC address match**: Does order's htlc_address match configured native_program_address or spl_program_address?
+6. **Transaction result**: Blockhash expired? (400ms polling, ~60s window). On-chain error? (parse error code from contract)
+7. **ActionsCache**: If recent failed attempt, action cached for 10min. Restart executor to clear.
+
+### 9.2 UserRedeemPending Investigation (Solana destination)
+1. Check solana-relayer auto-redeemer: Is it polling pending orders?
+2. Check credentials service: Can it fetch secrets? "could not fetch secrets" or "invalid json output"
+3. Check transaction state: Was redeem tx submitted? Blockhash expiry? On-chain error?
+4. If SPL: Check associated token account exists for redeemer. "Error creating ATA" → fund relayer with SOL for rent.
+5. Check watcher: Is the initiate event properly recorded? Event mapping failure?
+
+### 9.3 SolverRedeemPending Investigation (Solana source)
+1. Check executor shouldRedeem: source initiated, destination secret available, not already redeemed
+2. Check executor wallet SOL balance
+3. Check ActionsCache: Previous failed attempt blocks retry for 10min
+4. Check on-chain program errors: InvalidSecret (6003 native/6002 SPL), account already closed
+
+### 9.4 Refunded Investigation
+1. Instant refund triggers: DEADLINE_BUFFER (30min past deadline) OR cobiAlreadyRefunded (dest refunded, source not)
+2. Timelock refund: current_slot >= initiate_block_number + timelock
+3. On-chain errors: RefundBeforeExpiry (6006/6005), PDA already closed
+
+---
+
+## 10. Failure → Remediation Patterns
+
+| Failure Pattern | Log/Error Message | Root Cause | Operator Remediation |
+|---|---|---|---|
+| Order blacklisted | "Order {id} is blacklisted, skipping" | is_blacklisted flag set on order | Check if incorrectly set. Fix in orderbook DB if wrong. |
+| Price protection failed | "Price protection failed for order: {id}" | System loss exceeds price_threshold (1%) or quote service down | Check token prices. If quote_server_url is down: fix quote service. If market moved: order may need cancellation. |
+| Validator rejected | "Validator rejected Initiate action, skipping" | Cross-executor validation failed (source chain executor unreachable or rejected) | Check executor_registry_url. Verify source chain executor is running. Check source executor logs for validation details. |
+| Invalid block number | Order skipped silently | initiate_block_number is 0/null/undefined | Check source watcher. Manually update DB if source initiate tx is confirmed on-chain. |
+| Amount mismatch | Order skipped (amount !== filled_amount) | Watcher reported different filled_amount | Verify source initiation on-chain. Fix filled_amount in DB if mismatch. |
+| Insufficient confirmations | Order not initiated | current_confirmations < required_confirmations | Wait for source chain blocks. Check source watcher confirmation loop. |
+| Blockhash expired | "Transaction {sig} expired: block height exceeded" | Tx not confirmed within ~60s window (network congestion) | Retries after 10min ActionsCache TTL. If persistent: check Solana RPC health, switch to faster endpoint. |
+| On-chain tx error | "Transaction {sig} failed on-chain: {err}" | Program error (parse error code) | See contract error codes below. |
+| InvalidSecret (6003/6002) | On-chain error code 6003 (native) or 6002 (SPL) | sha256(secret) != stored secret_hash | Verify secret derivation. Check destination chain redeem tx for correct secret. |
+| RefundBeforeExpiry (6006/6005) | On-chain error code 6006 (native) or 6005 (SPL) | Refund attempted before timelock expired | Wait for more slots (~400ms each). Check initiate_block_number + timelock vs current slot. |
+| Account already exists (double initiate) | Anchor error "already in use" | PDA with same [initiator, secret_hash] exists | Prior swap with same params is active. Must complete (redeem/refund) first. |
+| PDA already closed (double redeem/refund) | Anchor deserialization error | Swap already completed | No action needed. Verify on-chain. |
+| Invalid HTLC address | "Invalid HTLC address" | Order's htlc_address doesn't match configured programs | Verify htlc_address matches native_program_address or spl_program_address. Update config if new program deployed. |
+| ActionsCache blocking | Order stuck for exactly 10min after failure | Previous attempt cached in LRU (TTL=10min) | Wait for TTL. Or restart executor to clear cache. |
+| Quote service failure | "Quote Service API request failed" | quote_server_url unreachable | Fix quote service. Has 5s timeout and 10s cache. All initiations blocked while down. |
+| Pending orders API failure | "Critical error in order processing" or "API request failed" | pending_orders_api_url unreachable | Check API connectivity. Verify endpoint returns correct format. |
+| Watcher event mapping failure | "could not map on-chain event to existing order" | Amount/timelock/token_address/htlc_address mismatch in DB | Compare on-chain event fields with DB swap record. Manually update if legitimate initiate. |
+| Watcher event parse error | "error parsing event" | IDL mismatch (program upgraded, watcher uses old IDL) | Update watcher's IDL. Restart watcher. |
+| Watcher block time unavailable | "could not find block time for transaction" | RPC pruning or propagation delay | Usually transient. If persistent: switch to archival RPC. |
+| Relayer secret validation failure | HTTP 400 "IncorrectSecret" | sha256(secret) != stored_secret_hash | Verify secret from destination chain. |
+| Relayer order not found | HTTP 404 "OrderNotFound" | Order not in DB or not matched | Verify orderId exists in orderbook and is properly matched. |
+| Relayer param mismatch | HTTP 400 "IncorrectParam" (timelock/initiator/redeemer/etc.) | User-submitted tx params don't match DB | User must rebuild transaction with correct params. |
+| Relayer secrets fetch failure | "could not fetch secrets" | Credentials service unreachable | Check credentials_url connectivity and response format. |
+| SPL token account missing | Error creating associated token account | Redeemer's ATA doesn't exist | Create ATA manually or fund relayer with SOL for rent (~0.003 SOL). |
+| Insufficient SOL for rent (SPL first setup) | Tx fails on first SPL initiate for new mint | identity_pda + token_vault need rent from sponsor | Fund sponsor wallet with ~0.003 SOL. |
+| Watcher confirmation stall | Txs stuck at current_confirmations < 2 | getSignatureStatuses returns null or never reaches "finalized" | Check if tx was actually dropped (blockhash expiry). Check RPC health. |
 - Minimum required per SPL initiate: ~0.003 SOL for `swap_data` rent + `identity_pda`/`token_vault` if first init.

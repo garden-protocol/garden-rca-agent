@@ -432,18 +432,69 @@ def _build_alert_from_order(
         service = "executor"
         alert_type = "stuck_order"
 
+    # Build a rich order context summary for the specialist
+    ad = co.additional_data
+    deadline_unix = ad.deadline
+    created_ts = result.created_at
+    if created_ts.tzinfo is None:
+        created_ts = created_ts.replace(tzinfo=timezone.utc)
+
+    # Compute time-related context
+    time_context = ""
+    if deadline_unix:
+        now_unix = int(datetime.now(timezone.utc).timestamp())
+        remaining_secs = deadline_unix - now_unix
+        if remaining_secs > 0:
+            time_context = f"Deadline in {remaining_secs // 60}m {remaining_secs % 60}s."
+        else:
+            time_context = f"Deadline EXPIRED {abs(remaining_secs) // 60}m ago."
+
+    order_context = (
+        f"## Order State Summary\n\n"
+        f"- **Route**: {co.source_chain} ({src.asset}) → {co.destination_chain} ({dst.asset})\n"
+        f"- **Source amount**: {co.source_amount} | **Destination amount**: {co.destination_amount}\n"
+        f"- **Solver ID**: {co.solver_id}\n"
+        f"- **Created**: {created_ts.isoformat()}\n"
+        f"- **Source initiated**: {'YES' if src.is_initiated else 'NO'}"
+    )
+    if src.is_initiated:
+        order_context += f" (tx: {src.initiate_tx_hash})"
+        if src.required_confirmations > 0:
+            order_context += f" [{src.current_confirmations}/{src.required_confirmations} confirmations]"
+    order_context += (
+        f"\n- **Destination initiated**: {'YES' if dst.is_initiated else 'NO'}"
+    )
+    if dst.is_initiated:
+        order_context += f" (tx: {dst.initiate_tx_hash})"
+    order_context += (
+        f"\n- **Source redeemed**: {'YES' if src.is_redeemed else 'NO'}"
+        f" | **Destination redeemed**: {'YES' if dst.is_redeemed else 'NO'}"
+        f"\n- **Source refunded**: {'YES' if src.is_refunded else 'NO'}"
+        f" | **Destination refunded**: {'YES' if dst.is_refunded else 'NO'}"
+        f"\n- **Timelock**: source={src.timelock}s, destination={dst.timelock}s"
+    )
+    if deadline_unix:
+        order_context += f"\n- **Deadline**: {datetime.fromtimestamp(deadline_unix, tz=timezone.utc).isoformat()} ({time_context})"
+    if ad.is_blacklisted:
+        order_context += f"\n- **BLACKLISTED**: Yes"
+    if src.filled_amount:
+        order_context += f"\n- **Filled amount**: {src.filled_amount} (expected: {src.amount})"
+    order_context += "\n"
+
+    message = (
+        f"Order {order_id} is stuck in state {state.value}.\n\n"
+        f"{order_context}"
+    )
+
     return Alert(
         order_id=order_id,
         alert_type=alert_type,
         chain=chain,  # type: ignore[arg-type]
         service=service,  # type: ignore[arg-type]
         network="mainnet",
-        message=(
-            f"Order {order_id} is stuck in state {state.value}. "
-            f"Source: {co.source_chain} → Destination: {co.destination_chain}."
-        ),
+        message=message,
         timestamp=datetime.now(timezone.utc),
-        deadline=None,
+        deadline=datetime.fromtimestamp(deadline_unix, tz=timezone.utc) if deadline_unix else None,
         metadata={
             "order_created_at": result.created_at.isoformat(),
             "source_chain": co.source_chain,
@@ -454,9 +505,9 @@ def _build_alert_from_order(
             "src_initiate_tx_hash": src.initiate_tx_hash,
             "secret_hash": src.secret_hash,
             "stuck_state": state.value,
-            "deadline": co.additional_data.deadline,
+            "deadline": deadline_unix,
             "source_timelock": src.timelock,
-            "destination_timelock": result.destination_swap.timelock,
+            "destination_timelock": dst.timelock,
         },
     )
 
@@ -508,7 +559,8 @@ def run(alert: Alert) -> tuple[RCAReport, AICost]:
     specialist_result = {
         "root_cause": "[Specialist not run]",
         "affected_components": [],
-        "suggested_actions": [],
+        "investigation_summary": "",
+        "remediation_actions": [],
         "severity": "medium",
         "confidence": "low",
         "raw_analysis": "",
@@ -529,7 +581,19 @@ def run(alert: Alert) -> tuple[RCAReport, AICost]:
 
     # ── Step 4: Assemble Report ───────────────────────────────────────────────
     duration = time.monotonic() - started_at
-    log_evidence = _extract_evidence_lines(log_result["raw_lines"])
+
+    # Build key log evidence from LLM-curated evidence (preferred) or fallback
+    from models.report import LogEvidence
+    key_log_evidence = []
+    for ev in log_result.get("key_evidence", []):
+        if isinstance(ev, dict) and ev.get("line"):
+            key_log_evidence.append(LogEvidence(
+                line=ev["line"],
+                significance=ev.get("significance", ""),
+                source=ev.get("source", ""),
+            ))
+    # Cap at 10 evidence items
+    key_log_evidence = key_log_evidence[:10]
 
     report = RCAReport(
         order_id=alert.order_id,
@@ -538,9 +602,10 @@ def run(alert: Alert) -> tuple[RCAReport, AICost]:
         network=alert.network,
         root_cause=specialist_result["root_cause"],
         affected_components=specialist_result["affected_components"],
-        log_evidence=log_evidence,
+        investigation_summary=specialist_result.get("investigation_summary", ""),
+        key_log_evidence=key_log_evidence,
         onchain_evidence=_serialize_onchain(onchain_result),
-        suggested_actions=specialist_result["suggested_actions"],
+        remediation_actions=specialist_result.get("remediation_actions", []),
         severity=specialist_result["severity"],
         confidence=specialist_result["confidence"],
         raw_analysis=specialist_result["raw_analysis"],
@@ -603,12 +668,8 @@ def _onchain_question(alert: Alert) -> str:
     )
 
 
-def _extract_evidence_lines(raw_lines: list[str]) -> list[str]:
-    """Return the most relevant log lines (errors/warnings first, capped at 20)."""
-    priority = [l for l in raw_lines if any(k in l.lower() for k in ("error", "err", "fail", "panic", "fatal"))]
-    warnings = [l for l in raw_lines if any(k in l.lower() for k in ("warn", "timeout", "retry"))]
-    rest = [l for l in raw_lines if l not in priority and l not in warnings]
-    return (priority + warnings + rest)[:20]
+
+# _extract_evidence_lines removed — log evidence is now LLM-curated by the log agent
 
 
 def _build_agent_usage(raw: dict | None) -> AgentTokenUsage | None:

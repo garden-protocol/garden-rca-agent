@@ -781,3 +781,64 @@ Go watcher's `Initiate()` in `blockchain/evm/htlc.go` auto-approves `MaxETHAmoun
 
 **Swap already redeemed/refunded**:
 `HTLCError::AlreadyRedeemed` — executor tried to act on a completed swap. This is a race condition similar to Bitcoin's `"order fulfilled"` warn. The swap was completed by another party between the time the executor read the order and tried to act.
+
+---
+
+## 9. Investigation Runbooks
+
+### 9.1 DestInitPending Investigation
+1. **Solver-engine layer**: Was order mapped to Initiate or NoOp? Check solver-engine logs for ORDER_MAPPING_FAILED or "Mapped order to NoOp action, skipping"
+2. **Executor received?**: Check evm-executor logs for POST /execute. Was the order queued? Check /status/{action_id}
+3. **Dry-run result**: Did dry_run_and_filter pass? Failures: "failed to dry run and filter requests" (entire RPC failure) or "dry run failed" per-order (on-chain revert)
+4. **Nonce issues**: "replacement transaction underpriced" → auto-retried with 3x gas. "Failed to get nonce" → RPC unreachable.
+5. **Submission result**: "transaction dropped or reverted" → on-chain state changed between dry-run and submission (race condition)
+6. **Watcher lag**: Check evm-watcher for "latestBlock is not latest, skipping" (RPC stale blocks) or "Job queue is full, dropping event" (worker backlog)
+
+### 9.2 UserRedeemPending Investigation
+1. **Relay RedeemerService**: Is it polling? Check is_order_ready_for_redemption conditions (source initiated, not redeemed, not refunded)
+2. **Redis TxPool**: Check MAX_PENDING_REQUESTS (25). "Max pending requests reached" → queue full
+3. **NoncePool**: Nonce errors → auto-handled by handle_nonce_error() which resets from chain state
+4. **Transaction stuck**: Check TransactionHandler. Reverted → requests re-enqueued. Dropped → nonce rollback + re-enqueue.
+5. **Secret mismatch**: "Secret hash mismatch" in EvmUserRedeemer → credential provider returned wrong secret
+
+### 9.3 SolverRedeemPending Investigation
+1. Check if destination was redeemed (secret revealed)
+2. Check executor balance: enough native token for gas?
+3. Check executor action queue and dry-run results for the redeem action
+4. Check timelock remaining on source HTLC
+
+### 9.4 Refunded Investigation
+1. Identify which side was refunded and why
+2. If dest never initiated → follow DestInitPending runbook
+3. If dest initiated but not redeemed → check relay RedeemerService, check if timelock expired
+4. Check for on-chain revert reasons using HTLC error selectors
+
+---
+
+## 10. Failure → Remediation Patterns
+
+| Failure Pattern | Log/Error Message | Root Cause | Operator Remediation |
+|---|---|---|---|
+| Executor dry-run batch failure | "failed to dry run and filter requests" | RPC node unreachable or rate-limited | Check RPC health. Verify RPC URL in executor settings. Check rate limits. |
+| Individual dry-run failure | "dry run failed" with order_id, action, error | On-chain revert (DuplicateOrder, OrderFulfilled, etc.) | Check on-chain state. If DuplicateOrder: already initiated (treat as success). If OrderFulfilled: already complete. |
+| Nonce too low | "replacement transaction underpriced" | Pending tx with same nonce at higher gas | Auto-retried with 3x gas. If persistent: restart executor to reset nonce state. |
+| Nonce fetch failure | "Failed to get nonce" | RPC unreachable | Check RPC node connectivity. Switch RPC endpoint if needed. |
+| Transaction reverted | Status: Failed "transaction dropped or reverted" | State changed between dry-run and submission | Usually race condition. Order will be retried. Check if another agent initiated first. |
+| Conversion error | "Failed to convert order to request" | Bad swap data (invalid hex address, missing fields) | Check order data in solver-engine. Data quality issue upstream. |
+| Simulation length mismatch | "Simulation results length does not match" | Bug in multicall or RPC partial results | Restart executor. Escalate if persistent. |
+| Cache TTL expiry | Status: NotFound for recently submitted order | Order sat in queue > 1 hour (CACHE_TTL=3600s) | Check executor throughput. Increase CACHE_TTL if needed. |
+| Watcher lag | "latestBlock is not latest, skipping" | RPC returning stale block numbers | Check RPC node sync status. Switch to a fully synced RPC endpoint. |
+| Watcher job queue full | "Job queue is full, dropping event" | Workers not keeping up with event volume | Increase QueueSize and WorkerCount. Check DB write latency. |
+| Watcher no swap found | "no swap found" | DB row doesn't exist yet (race condition) | Usually transient. Watcher worker skips non-retriable errors. |
+| Relay MAX_PENDING exceeded | "Max pending requests reached" | >25 inflight txs in Redis TxPool | Wait for TransactionHandler to confirm/clear pending txs. If stuck: check if TransactionHandler is running. |
+| Relay nonce desync | Nonce error in batch execution | NoncePool out of sync with chain state | Auto-handled: handle_nonce_error() fetches confirmed nonce from chain. If persistent: restart relay. |
+| Relay tx dropped | "Dropped transaction" | Gas too low, mempool eviction, nonce gap | Auto-handled: nonce rollback + re-enqueue. If persistent: check gas price config. |
+| Relay tx reverted | "Reverted transaction" | On-chain state changed (race condition) | Auto-handled: requests re-enqueued for retry. |
+| HTLC DuplicateOrder revert | Error selector 0x90c06174 | orderID already exists on-chain | Check if our initiation or another agent's. If ours: treat as success. |
+| HTLC OrderFulfilled revert | Error selector 0x356b842c | Already redeemed or refunded | Check who completed the order. No action needed. |
+| HTLC InvalidInitiatorSignature | Error selector 0x3b3fd9ae | EIP-712 signature verification failed | Check EIP-712 domain parameters. User may need to re-sign. |
+| HTLC OrderNotExpired | Error selector 0x839f009c | Refund attempted before timelock expiry | Wait for more blocks. Check timelock calculation. |
+| HTLC IncorrectSecret | Error selector 0x3dbd7ab4 | sha256(secret) doesn't match | Critical: investigate secret generation/storage. |
+| Executor registration failure | Panic "Failed to register executor" | solver-engine URL unreachable after 20 retries | Verify solver_engine_url in config. Ensure solver-engine is running. Check network. |
+| No redeemer for chain | "No redeemer available for chain X" | Chain not configured in relay | Add chain configuration to relay settings. Order cached as non-redeemable for 1hr. |
+| Secret hash mismatch | "Secret hash mismatch" | Credential provider returned wrong secret | Investigate credential/order_creds service. |

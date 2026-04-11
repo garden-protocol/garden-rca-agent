@@ -99,13 +99,14 @@ def _build_rca_embed(data: dict) -> discord.Embed:
     severity   = report.get("severity", "medium")
     confidence = report.get("confidence", "low")
     root_cause = report.get("root_cause", "Unknown")
-    actions    = report.get("suggested_actions", [])
+    actions    = report.get("remediation_actions", [])
     components = report.get("affected_components", [])
+    investigation = report.get("investigation_summary", "")
 
     colour = _SEVERITY_COLOUR.get(severity, discord.Colour.light_grey())
 
     embed = discord.Embed(
-        title=f"🔍 RCA — {state}  |  {severity.upper()} / {confidence} confidence",
+        title=f"RCA — {state}  |  {severity.upper()} / {confidence} confidence",
         description=_truncate(root_cause, 2000),
         colour=colour,
     )
@@ -114,26 +115,49 @@ def _build_rca_embed(data: dict) -> discord.Embed:
     embed.add_field(name="Duration", value=f"{data.get('duration_seconds', '?')}s", inline=True)
     embed.add_field(name="AI Cost",  value=_format_cost(data.get("ai_cost")),        inline=True)
 
-    if components:
+    # Investigation Summary — what the bot checked and found
+    if investigation:
         embed.add_field(
-            name="Affected Components",
-            value=_truncate("\n".join(f"• {c}" for c in components), 512),
+            name="Investigation Summary",
+            value=_truncate(investigation, 1024),
             inline=False,
         )
 
+    # Remediation Actions — only human-actionable steps
     if actions:
-        actions = actions[:5]  # hard cap at 5 actions
+        actions = actions[:5]
         embed.add_field(
-            name="Suggested Actions",
+            name="Remediation Actions",
             value=_truncate("\n".join(f"{i+1}. {a}" for i, a in enumerate(actions)), 1024),
             inline=False,
         )
 
-    log_lines = report.get("log_evidence", [])
-    if log_lines:
+    # Key Evidence — LLM-curated log lines with significance
+    evidence_items = report.get("key_log_evidence", [])
+    if evidence_items:
+        evidence_lines = []
+        for ev in evidence_items[:5]:
+            if isinstance(ev, dict):
+                line = ev.get("line", "")
+                sig = ev.get("significance", "")
+                if line:
+                    # Truncate long log lines
+                    display_line = line[:120] + "..." if len(line) > 120 else line
+                    entry = f"`{display_line}`"
+                    if sig:
+                        entry += f"\n  _{sig}_"
+                    evidence_lines.append(entry)
+        if evidence_lines:
+            embed.add_field(
+                name="Key Evidence",
+                value=_truncate("\n".join(evidence_lines), 1024),
+                inline=False,
+            )
+
+    if components:
         embed.add_field(
-            name="Log Evidence",
-            value=_truncate("\n".join(f"`{l}`" for l in log_lines[:5]), 1024),
+            name="Affected Components",
+            value=_truncate("\n".join(f"• {c}" for c in components), 512),
             inline=False,
         )
 
