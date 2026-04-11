@@ -10,7 +10,7 @@ from pathlib import Path
 from models.alert import Alert
 from tools.repo import build_repo_tool_definitions, execute_repo_tool
 from tools.gitea import (
-    is_configured as gitea_configured,
+    is_reachable as gitea_reachable,
     build_gitea_tool_definitions,
     execute_gitea_tool,
 )
@@ -197,10 +197,10 @@ class BaseSpecialist(ABC):
             tool_defs = build_repo_tool_definitions(chain)
             tool_executor = lambda name, inp: execute_repo_tool(chain, name, inp)
             max_turns = 25
-        elif gitea_configured():
+        elif gitea_reachable():
             tool_defs = build_gitea_tool_definitions(chain)
             tool_executor = lambda name, inp: execute_gitea_tool(chain, name, inp)
-            max_turns = 15  # fewer turns for API-based tools (slower per call)
+            max_turns = 10  # fewer turns for API-based tools (each call has network latency)
         else:
             tool_defs = None
             tool_executor = None

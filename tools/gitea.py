@@ -14,7 +14,8 @@ from config import settings
 
 logger = logging.getLogger("rca-agent.gitea")
 
-_TIMEOUT = 15.0  # seconds per API call
+_TIMEOUT = 10.0  # seconds per API call
+_PING_TIMEOUT = 5.0  # seconds for connectivity check
 
 # Files/dirs to skip in directory listings (mirrors repo.py)
 SKIP_PATTERNS = {
@@ -53,6 +54,25 @@ def _resolve_gitea_repo(chain: str, component: str) -> tuple[str, str]:
 def is_configured() -> bool:
     """Check if Gitea access is configured."""
     return bool(settings.gitea_url and settings.gitea_token)
+
+
+def is_reachable() -> bool:
+    """
+    Quick connectivity check — ping Gitea API before committing to tool-based mode.
+    Returns False if Gitea is down, so the specialist falls back to knowledge-only.
+    """
+    if not is_configured():
+        return False
+    try:
+        resp = httpx.get(
+            _api("/settings/api"),
+            headers=_headers(),
+            timeout=_PING_TIMEOUT,
+        )
+        return resp.status_code < 500
+    except Exception:
+        logger.warning("Gitea unreachable at %s — falling back to knowledge-only", settings.gitea_url)
+        return False
 
 
 def read_file(chain: str, path: str, repo: str = "executor") -> str:
