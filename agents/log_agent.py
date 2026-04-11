@@ -30,14 +30,43 @@ creation timestamp, not the current time.
 When a solver_id is provided, ALWAYS pass it to search_by_order_id and search_by_service \
 calls. This filters executor logs to the specific solver that handled the order.
 
-Your output should be a structured markdown report with:
-1. **Timeline** — chronological sequence of key events from the logs
-2. **Errors** — list of error messages found, with context
-3. **Warnings** — notable warnings that may indicate upstream issues
-4. **Key observations** — patterns, anomalies, repeated failures
+## Output Format
 
-Be precise. Quote actual log lines where they are evidence. Do not speculate beyond what the logs show.
-If log queries fail or return nothing, say so clearly.
+Your output MUST end with a ```json block containing structured evidence:
+
+```json
+{
+  "timeline": "chronological sequence of key events",
+  "key_evidence": [
+    {"line": "exact log line", "significance": "why this matters", "source": "service_name"},
+    ...
+  ],
+  "errors_found": true/false,
+  "summary": "2-3 sentence summary of what logs reveal"
+}
+```
+
+Before the JSON block, write a brief markdown analysis.
+
+## Log Noise to IGNORE (never include these as evidence)
+- SQL slow execution warnings ("slow sql", "execution time exceeded", "slow query")
+- Routine periodic health checks, heartbeat pings, keepalive messages
+- gRPC keepalive pings, HTTP health probes
+- Standard startup/shutdown messages (unless they coincide with the incident window)
+- Generic "retrying" messages unless they show escalating failure counts
+- Prometheus metric scrape logs
+- Routine cache expiry/refresh logs unrelated to the order
+
+## What IS Important Evidence
+- Error messages mentioning the specific order ID
+- Transaction failures (revert, nonce errors, gas errors, timeout)
+- State transition failures (mapper → NoOp, failed initiate/redeem/refund)
+- Service connectivity issues (executor unreachable, RPC timeout, DB connection error)
+- Order processing decisions (why an order was skipped, filtered, or rejected)
+- Unexpected state (order not found, duplicate order, mismatched amounts)
+
+Be precise. Quote actual log lines as evidence. Do not speculate beyond what the logs show.
+If log queries fail or return nothing, say so clearly — absence of logs IS useful evidence.
 """
 
 
@@ -144,14 +173,34 @@ def run(alert: Alert) -> dict:
 
         messages.append({"role": "user", "content": tool_results})
 
-    summary = next(
+    raw_text = next(
         (b.text for b in response.content if b.type == "text"),
         "[Log agent returned no summary]",
     )
 
+    # Extract structured evidence from the trailing JSON block
+    key_evidence = []
+    summary = raw_text
+    import json
+    import re
+    json_matches = re.findall(r"```json\s*(.*?)\s*```", raw_text, re.DOTALL)
+    if json_matches:
+        try:
+            structured = json.loads(json_matches[-1])
+            key_evidence = structured.get("key_evidence", [])
+            # Use the LLM's summary if available, otherwise use the full text
+            if structured.get("summary"):
+                summary_line = structured["summary"]
+                # Keep the markdown analysis (everything before the JSON block) + the LLM summary
+                json_start = raw_text.rfind("```json")
+                summary = raw_text[:json_start].strip() if json_start > 0 else summary_line
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return {
         "summary": summary,
-        "raw_lines": all_log_lines[:500],  # cap for downstream context size
+        "key_evidence": key_evidence,
+        "raw_lines": all_log_lines[:500],  # kept for debugging, not shown to user
         "usage": {
             "model": MODEL,
             "input_tokens": total_input,

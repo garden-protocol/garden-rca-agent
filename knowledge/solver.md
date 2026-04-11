@@ -366,3 +366,49 @@ When a stuck order involves solver-layer issues:
    - Check Docker Compose status for all services
    - Check startup logs for any failed steps
    - Verify Solver.toml has correct RPC URLs and API key
+
+---
+
+## 9. Investigation Runbooks
+
+For each stuck state, a step-by-step investigation protocol the RCA agent should follow when investigating solver-layer issues.
+
+### DestInitPending (solver-engine perspective)
+1. Check if solver-engine is running and has executors registered. Log: `"No executors registered yet, waiting..."` means engine is idle.
+2. Check if the order appears in pending orders fetch. Log: `"Fetched {n} orders total"` → `"Found {n} unlocked orders"`
+3. Check if order is locked. If locked: order was already dispatched; check status watcher logs.
+4. Check mapping result. Log: `"Mapped order to NoOp action, skipping"` means mapper returned NoOp. `ORDER_MAPPING_FAILED` means mapper threw error (likely fiat provider down).
+5. If mapped to Initiate: check validation. Log: `"Order does not have valid initiate: {e}"` means executor's /validate rejected it.
+6. If validated: check dispatch. `EXECUTOR_EXECUTE_FAILED` means executor unreachable. `ALL_EXECUTORS_SEND_FAILED` means systemic failure.
+7. If dispatched: check status watcher. `EXECUTION_FAILED` with reason tells what went wrong. `ACTION_NOT_FOUND_TIMEOUT` means executor lost track of the action.
+
+### SolverRedeemPending (solver-engine perspective)
+1. Check if order is being fetched (appears in pending orders)
+2. Check mapper output — should map to Redeem with secret
+3. Check if executor received the redeem action
+4. Check status watcher for the redeem action
+
+### Lock-Related Issues
+- Lock TTL is 600s (10 min). Order stays locked even after NotFound timeout (120s).
+- If order is stuck for ~10 min, it's likely waiting for lock TTL expiry.
+- On `EXECUTION_FAILED`, lock IS removed immediately.
+- On `EXECUTION_SUCCESS`, lock is NOT removed by watcher — relies on `unlock_updated_orders()` seeing tx_hash.
+
+---
+
+## 10. Failure → Remediation Patterns
+
+| Failure Pattern | Log Code/Message | Root Cause | Remediation |
+|---|---|---|---|
+| No executors registered | "No executors registered yet, waiting..." | solverd didn't start executors, or executor registration failed | Restart solverd. Check executor container logs. Verify port 7070 is reachable. |
+| Order mapping failed | ORDER_MAPPING_FAILED | Fiat provider unreachable or price data invalid | Check fiat_provider_url connectivity. Verify price API returns valid data. |
+| Validation failed | "Order does not have valid initiate" | Executor rejected source initiate (HTLC params mismatch, confirmations insufficient, amount mismatch) | Check executor logs for validation failure details. Verify on-chain source HTLC state. |
+| Executor unreachable | EXECUTOR_EXECUTE_FAILED | Executor container down, network issue, or 60s timeout | Check executor container health. Restart executor. Check Docker network. |
+| All executors failed | ALL_EXECUTORS_SEND_FAILED | Systemic executor failure or network partition | Check all executor containers. Check Docker Compose. Check network-level issues. |
+| Action lost by executor | ACTION_NOT_FOUND_TIMEOUT | Executor crash/restart lost in-memory action queue | Check executor for recent restarts. Order auto-retries after 600s lock TTL. Restart solver-engine if urgent. |
+| Execution failed on-chain | EXECUTION_FAILED with reason | On-chain tx reverted (see chain-specific failure patterns) | Parse the reason string. Check chain-specific failure patterns for remediation. |
+| Pending orders API down | "Failed to fetch orders from all chains" | Orderbook API unreachable | Check pending_orders_url health. Restart orderbook if needed. |
+| Executor registration failed | EXECUTOR_PING_FAILED | Executor not running or wrong URL during registration | Check executor is running. Verify URL. Re-trigger registration by restarting executor. |
+| Price drop threshold breached | NoOp due to price check | price_drop_threshold (default 1%) exceeded | Wait for price recovery. Or increase price_drop_threshold in Settings.toml if appropriate. |
+| Lock cache capacity exceeded | Duplicate execution possible | >1024 concurrent orders overflow Moka cache | Increase cache capacity in engine config. Reduce order processing backlog. |
+| Status poll failures | EXECUTOR_GET_STATUS_FAILED | Executor temporarily unreachable during status check | Watcher retries automatically. Check executor availability. |

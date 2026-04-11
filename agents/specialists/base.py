@@ -90,8 +90,8 @@ class BaseSpecialist(ABC):
             onchain_findings: Optional findings from On-Chain Query Agent
 
         Returns:
-            dict with 'root_cause', 'affected_components', 'suggested_actions',
-                       'severity', 'confidence', 'raw_analysis'
+            dict with 'root_cause', 'affected_components', 'investigation_summary',
+                       'remediation_actions', 'severity', 'confidence', 'raw_analysis'
         """
         alert_block = (
             f"**Order ID:** {alert.order_id}\n"
@@ -117,25 +117,56 @@ class BaseSpecialist(ABC):
             f"## Alert\n\n{alert_block}\n\n"
             f"## Log Intelligence Report\n\n{log_summary}"
             f"{onchain_block}\n\n"
-            f"Using the knowledge base, source code tools, and the above evidence, "
-            f"perform a full root cause analysis. Read relevant source files to understand "
-            f"exact code paths involved. Identify:\n"
-            f"1. Root cause — one or two sentences, be specific (name files and line numbers)\n"
-            f"2. Affected components\n"
-            f"3. Suggested actions (exactly 3 to 5) — each action must be a single concise "
-            f"sentence starting with a verb (e.g. 'Restart …', 'Clear …', 'Verify …'). "
-            f"No sub-bullets, no explanations, no caveats.\n"
-            f"4. Severity: critical / high / medium / low\n"
-            f"5. Confidence in your diagnosis: high / medium / low\n\n"
-            f"Keep the entire analysis direct and concise — avoid filler, repetition, "
-            f"and excessive detail. State the root cause clearly and move on.\n\n"
-            f"End your response with a JSON block containing these fields:\n"
+            f"---\n\n"
+            f"## Your Role: You Are the Investigator\n\n"
+            f"You have full access to source code (via tools), log analysis (above), "
+            f"on-chain findings (above), and deep knowledge of the codebase (in your system prompt). "
+            f"YOUR job is to investigate, trace code paths, and explain what happened. "
+            f"**Never tell the operator to inspect code, check logs, or verify on-chain state — "
+            f"that is YOUR job and you have already done it (or can do it now with your tools).**\n\n"
+            f"## Investigation Protocol\n\n"
+            f"1. **TRACE the code path**: Using the knowledge base and source code tools, identify "
+            f"what code executes for this order's state and alert type. For '{alert.alert_type}' alerts, "
+            f"start from the relevant entry point in the knowledge base.\n"
+            f"2. **CORRELATE evidence**: Match log patterns and on-chain state to specific code paths. "
+            f"What condition in the code explains the observed behavior?\n"
+            f"3. **IDENTIFY the failure point**: Name the exact function, condition, or external "
+            f"dependency that failed. Cite file and function names from the knowledge base.\n"
+            f"4. **DETERMINE root cause**: Explain WHY it failed (stale cache, insufficient gas, "
+            f"missed event, deadline race, nonce desync, RPC failure, etc.)\n"
+            f"5. **PRESCRIBE remediation**: Only actions that require human/operator intervention.\n\n"
+            f"## Output Format\n\n"
+            f"Write a concise analysis following the protocol above, then end with:\n\n"
             f"```json\n"
-            f'{{"root_cause": "...", "affected_components": [...], '
-            f'"suggested_actions": [...], "severity": "...", "confidence": "..."}}\n'
-            f"```\n"
-            f"IMPORTANT: The root_cause field must be 1-2 sentences max — state the cause "
-            f"and the effect, nothing else. suggested_actions must have 3-5 items."
+            f'{{\n'
+            f'  "root_cause": "1-2 sentences: what failed and why (cite code references)",\n'
+            f'  "affected_components": ["service/file:function or module"],\n'
+            f'  "investigation_summary": "What you checked → what you found. 3-5 bullet points.",\n'
+            f'  "remediation_actions": ["Only human-actionable steps: restart X, fund Y, update Z"],\n'
+            f'  "severity": "critical|high|medium|low",\n'
+            f'  "confidence": "high|medium|low"\n'
+            f'}}\n'
+            f"```\n\n"
+            f"## Remediation Actions Rules\n\n"
+            f"Valid remediation actions (things ONLY a human operator can do):\n"
+            f"- Restart a service to clear in-memory cache / reset state\n"
+            f"- Fund a wallet with native token for gas\n"
+            f"- Update or rotate RPC endpoints\n"
+            f"- Manually trigger a redeem/refund via CLI or API\n"
+            f"- Escalate to the contract/protocol team\n"
+            f"- Scale infra (increase connections, add replicas)\n"
+            f"- Check external dependency status (RPC provider, mempool congestion)\n"
+            f"- Rotate API keys or unlock keystores\n"
+            f"- Wait for network conditions to improve (with specific what to wait for)\n\n"
+            f"NEVER include these as remediation (you should do them yourself):\n"
+            f"- 'Inspect/examine/review code in X' — you have the code\n"
+            f"- 'Check logs for Y' — the log agent already queried logs\n"
+            f"- 'Verify on-chain state of Z' — the on-chain agent already checked\n"
+            f"- 'Add debug logging' — not incident remediation\n"
+            f"- 'Optimize database queries' — not incident response\n"
+            f"- 'Monitor X' — be specific about what to do, not what to watch\n\n"
+            f"remediation_actions must have 2-5 items. "
+            f"root_cause must be 1-2 sentences max."
         )
 
         messages = [{"role": "user", "content": user_message}]
@@ -241,7 +272,8 @@ class BaseSpecialist(ABC):
         return {
             "root_cause": structured.get("root_cause", raw_analysis[:500]),
             "affected_components": structured.get("affected_components", []),
-            "suggested_actions": structured.get("suggested_actions", []),
+            "investigation_summary": structured.get("investigation_summary", ""),
+            "remediation_actions": structured.get("remediation_actions", []),
             "severity": structured.get("severity", "medium"),
             "confidence": structured.get("confidence", "low"),
             "raw_analysis": raw_analysis,

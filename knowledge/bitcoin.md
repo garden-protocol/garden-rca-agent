@@ -727,3 +727,71 @@ These are all wrapped in `NoRetryError` — the indexer client will NOT retry th
 | `"Failed to get control block"` | `get_control_block()` | Leaf not found in tree |
 | `"Failed to parse initiator public key"` | `HTLCParams::try_from()` | Invalid hex pubkey in order |
 | `"Failed to decode secret hash"` | `HTLCParams::try_from()` | Invalid hex secret hash |
+
+---
+
+## 9. Investigation Runbooks
+
+### 9.1 DestInitPending Investigation (Bitcoin as destination)
+1. **Solver-engine**: Was order mapped to Initiate? Check for "Mapped order to NoOp action, skipping" or ORDER_MAPPING_FAILED
+2. **Mapper conditions** (cobi-v2 executor/mapper.go): Check conditions in priority order:
+   - `init_skipped_confirmations_not_met`: Source chain confirmations insufficient. Check current_confirmations vs required_confirmations. If watcher lag: check confirmation_updater.
+   - `init_skipped_filled_amount_mismatch`: filledAmount != orderAmount. User sent wrong amount.
+   - `init_skipped_deadline_passed_within_refund_buffer`: Deadline exceeded. 30-min buffer before instant refund triggered.
+   - `init_skipped_price_threshold_breached`: Price moved >1% (priceDropThreshold). Wait for recovery or increase threshold.
+   - `init_skipped_price_fetch_failed`: Fiat price API down. Transient, retries on next 2s cycle.
+   - `init_blocked_by_validation`: External validation API rejected the order.
+3. **BatcherWallet**: Check wallet UTXO balance. `insufficient funds: have X, need Y` → fund wallet.
+4. **Fee estimation**: All fee estimators failed → check mempool.space and blockstream API connectivity.
+5. **Tx submission**: Check for `bad-txns-inputs-missingorspent` (UTXO conflict, auto-recovers with RBF), `txn-mempool-conflict` (retries automatically), `ErrHighFeeEstimate` (fee rate exceeds MaxFeeRate).
+
+### 9.2 UserRedeemPending Investigation (Bitcoin source)
+1. Check btc-relayer: Did it attempt the redeem? 
+2. Check relayer validation: Order must be >24 hours old. Source must have initiate_tx_hash. Destination refunded if initiated.
+3. Check credentials retrieval: Can the relayer get private keys from credentials service?
+4. Check fee estimation and wallet balance for the refund tx.
+
+### 9.3 SolverRedeemPending Investigation (Bitcoin source)
+1. Check executor shouldRedeem condition: SourceSwap.RedeemTxHash == "" && DestSwap.Secret != ""
+2. Is the secret available from destination chain?
+3. Check executor wallet balance for redeem tx
+4. Check if HTLC secret validation passes: sha256(secret) == htlc.SecretHash
+
+### 9.4 Refunded Investigation
+1. Check if refund or instant refund:
+   - Instant refund: requires SACP bytes. `instant_refund_skipped_no_sacp_bytes` = SACP missing, manual refund needed after timelock.
+   - Timelock refund: `refund_skipped_timelock_not_expired` with blocksRemaining = need more blocks.
+2. Why wasn't order completed before refund? Trace full lifecycle.
+
+---
+
+## 10. Failure → Remediation Patterns
+
+| Failure Pattern | Log Message | Root Cause | Operator Remediation |
+|---|---|---|---|
+| Confirmations not met | init_skipped_confirmations_not_met | Source chain init not confirmed enough | Wait for blocks. Check watcher confirmation_updater and indexer health. |
+| Filled amount mismatch | init_skipped_filled_amount_mismatch | User sent wrong amount to HTLC | Order cannot proceed. Manual intervention or user re-initiate. |
+| Deadline passed | init_skipped_deadline_passed_within_refund_buffer | Order deadline exceeded + 30min buffer | If SACP bytes present: instant refund auto-triggered. If BTC source without SACP: manual refund needed. |
+| Price threshold breached | init_skipped_price_threshold_breached | Price moved >1% (priceDropThreshold) | Wait for price recovery. Increase priceDropThreshold env var for stablecoin pairs. |
+| Price fetch failed | init_skipped_price_fetch_failed | Fiat price API unreachable | Check fiat price service. Transient; retries on next 2s cycle. |
+| Validation API rejected | init_blocked_by_validation | External validation/screener flagged the order | Check validation API service. Review the rejection reason in logs. |
+| Insufficient funds | "insufficient funds: have X, need Y" | BatcherWallet doesn't have enough UTXOs | Fund the batcher wallet address. |
+| Fee too high | ErrHighFeeEstimate | Required fee rate exceeds MaxFeeRate | Wait for mempool to cool down. Or increase MaxFeeRate in batcher config. |
+| All fee estimators failed | "fee suggestion: error" | mempool.space and blockstream APIs unreachable | Check network connectivity to fee APIs. |
+| UTXO conflict | bad-txns-inputs-missingorspent | UTXOs used were already spent (race/reorg) | Auto-recovers via RBF resubmission. |
+| Mempool conflict | txn-mempool-conflict | Conflicting tx in mempool | Retries automatically on next batcher PTI cycle. |
+| RBF depth exceeded | "build RBF depth exceeded" | Fee keeps increasing, needs more UTXOs | Fund the wallet. Check fee rate volatility. |
+| CPFP depth exceeded | "build CPFP depth exceeded" | Similar to RBF depth issue | Fund the wallet. |
+| Invalid secret on redeem | ErrInvalidSecret | sha256(secret) != htlc.SecretHash | Investigate orderbook data integrity. Possible data corruption. |
+| Refund too early | "need more N blocks to refund" | currentTip < blockHeight + timelock | Wait for more blocks. |
+| Invalid SACP for instant refund | ErrSACPInvalid* errors | Pre-signed SACP tx doesn't match current HTLC state | Regenerate SACP. Check if HTLC was funded after SACP generation. |
+| Cache read failure | cache_read_failed | LevelDB error, action dropped | Check disk space and LevelDB health. Action retries on next cycle if cache recovers. |
+| Chain worker not found | chain_worker_not_found | No executor for chainAsset key | Check config. Ensure BitcoinHTLCActionExecutor is registered for the chain+asset pair. |
+| Swap config conversion failed | btc_swap_config_conversion_failed | Invalid hex in Redeemer/Initiator/SecretHash or zero Amount | Check order data integrity upstream. |
+| Watcher address not in cache | No initiate event detected | pending_swaps_poller hasn't loaded swap yet | Check poller interval. ZMQ replays will re-detect after cache populated. |
+| Watcher screener failure | "Failed to screen tx inputs" | Screener API error (not blacklist, API failure) | Check screener service. Deposits silently dropped until screener recovers. |
+| Watcher blacklisted address | "TX has inputs from a blacklisted address" | Screener flagged input address | Order marked blacklisted. Will not be processed by executor. |
+| Indexer timeout | Context deadline exceeded | Electrs/esplora slow or unreachable (5s timeout) | Check indexer service load and connectivity. |
+| Relayer: order too recent | "Order is newer than 24 hours" | Safety check for premature refunds | Wait. Relayer deliberately waits 24 hours. |
+| Relayer: dest not refunded | "Destination swap has not been refunded" | COBI hasn't refunded destination yet | Wait for COBI to refund destination. Check executor refund logic. |
+| Relayer: timelock not expired | "Source swap timelock not expired yet" | block_height + timelock > current_tip | Wait for more blocks. |
