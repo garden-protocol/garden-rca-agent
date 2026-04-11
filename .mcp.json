@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "gitea": {
+      "type": "stdio",
+      "command": "go",
+      "args": [
+        "run",
+        "gitea.com/gitea/gitea-mcp@latest",
+        "-t",
+        "stdio"
+      ],
+      "env": {
+        "GITEA_ACCESS_TOKEN": "cdc7fda44163a1b5d35869174657f70693f57a28",
+        "GITEA_HOST": "https://version.btcfi.wtf"
+      }
+    }
+  }
+}
