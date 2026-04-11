@@ -39,22 +39,40 @@ class BaseSpecialist(ABC):
             return path.read_text(encoding="utf-8")
         return f"[No knowledge doc found for {self.chain}. Run POST /study/{self.chain} first.]"
 
+    def _load_solver_knowledge(self) -> str:
+        """Load cross-chain solver ecosystem knowledge (engine, comms, aggregator, daemon)."""
+        path = KNOWLEDGE_DIR / "solver.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        return ""
+
     def _build_system(self) -> list[dict]:
         """Build system prompt blocks with prompt caching on the knowledge doc."""
         knowledge = self._load_knowledge()
+        solver_knowledge = self._load_solver_knowledge()
 
-        # System prompt is a list of content blocks when using cache_control
-        return [
+        blocks = [
             {
                 "type": "text",
                 "text": self.system_prompt,
             },
-            {
-                "type": "text",
-                "text": f"\n\n## Chain Knowledge Base\n\n{knowledge}",
-                "cache_control": {"type": "ephemeral"},
-            },
         ]
+
+        # Solver ecosystem knowledge is shared across all chain specialists
+        if solver_knowledge:
+            blocks.append({
+                "type": "text",
+                "text": f"\n\n## Solver Ecosystem Knowledge Base\n\n{solver_knowledge}",
+            })
+
+        # Chain-specific knowledge gets the cache breakpoint (largest, most reused block)
+        blocks.append({
+            "type": "text",
+            "text": f"\n\n## Chain Knowledge Base\n\n{knowledge}",
+            "cache_control": {"type": "ephemeral"},
+        })
+
+        return blocks
 
     def analyze(
         self,
