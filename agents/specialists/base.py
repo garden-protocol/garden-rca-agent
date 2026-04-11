@@ -9,6 +9,11 @@ from pathlib import Path
 
 from models.alert import Alert
 from tools.repo import build_repo_tool_definitions, execute_repo_tool
+from tools.gitea import (
+    is_configured as gitea_configured,
+    build_gitea_tool_definitions,
+    execute_gitea_tool,
+)
 
 
 MODEL = "claude-opus-4-6"
@@ -181,19 +186,29 @@ class BaseSpecialist(ABC):
             total_cache_read  += getattr(u, "cache_read_input_tokens", 0) or 0
             total_cache_write += getattr(u, "cache_creation_input_tokens", 0) or 0
 
-        # Only enable repo tools if at least one repo path exists on disk.
-        # In prod without mounted repos, skip directly to a single knowledge-doc-based call.
+        # Determine tool source: local filesystem > Gitea API > knowledge-only
         from config import settings as _cfg
         import os as _os
-        repos_available = any(
+        repos_on_disk = any(
             _os.path.isdir(p) for p in _cfg.repo_paths(chain).values()
         )
 
-        if repos_available:
+        if repos_on_disk:
             tool_defs = build_repo_tool_definitions(chain)
+            tool_executor = lambda name, inp: execute_repo_tool(chain, name, inp)
+            max_turns = 25
+        elif gitea_configured():
+            tool_defs = build_gitea_tool_definitions(chain)
+            tool_executor = lambda name, inp: execute_gitea_tool(chain, name, inp)
+            max_turns = 15  # fewer turns for API-based tools (slower per call)
+        else:
+            tool_defs = None
+            tool_executor = None
+            max_turns = 0
 
-            # Agentic loop with repo tools — capped to prevent runaway cost
-            for _turn in range(25):
+        if tool_defs:
+            # Agentic loop with code tools (filesystem or Gitea)
+            for _turn in range(max_turns):
                 response = client.messages.create(
                     model=MODEL,
                     max_tokens=8192,
@@ -214,7 +229,7 @@ class BaseSpecialist(ABC):
 
                 tool_results = []
                 for tool in tool_use_blocks:
-                    result = execute_repo_tool(chain, tool.name, tool.input)
+                    result = tool_executor(tool.name, tool.input)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool.id,
@@ -252,7 +267,7 @@ class BaseSpecialist(ABC):
                 )
                 _accumulate(response)
         else:
-            # No repos on disk — analyse directly from knowledge docs
+            # No code tools available — analyse from knowledge docs only
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=8192,

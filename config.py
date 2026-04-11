@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     # Solana RPC
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
 
+    # Gitea (code access in prod — replaces mounted repos)
+    gitea_url: str = ""              # e.g. https://version.btcfi.wtf
+    gitea_token: str = ""            # API token with read access
+    gitea_org: str = "hashiraio"     # Gitea org/owner
+
     # Server
     port: int = 8000
 
@@ -196,6 +201,46 @@ class Settings(BaseSettings):
         Defaults to 'executor' for backward compatibility.
         """
         return self.repo_paths(chain)[component]
+
+    def gitea_repos(self, chain: str) -> dict[str, tuple[str, str]]:
+        """
+        Returns Gitea repo name and branch for each component of a chain.
+        Format: {component_name: (gitea_repo_name, branch)}
+        """
+        return {
+            "bitcoin": {
+                "executor": ("cobi-v2", self.branch_bitcoin_executor),
+                "watcher_cobi": ("bit-ponder", self.branch_bitcoin_watcher_cobi),
+                "watcher_zmq": ("bitcoin-watcher", self.branch_bitcoin_watcher_zmq),
+                "relayer": ("btc-relayer", self.branch_bitcoin_relayer),
+                "blockchain_lib": ("blockchain", self.branch_blockchain),
+                "garden_rs": ("garden-rs", self.branch_garden_rs),
+            },
+            "evm": {
+                "executor": ("evm-executor", self.branch_evm_executor),
+                "watcher": ("garden-evm-watcher", self.branch_evm_watcher),
+                "relayer": ("evm-swapper-relay", self.branch_evm_relayer),
+                "htlc": ("evm-htlc", self.branch_evm_htlc),
+                "blockchain_lib": ("blockchain", self.branch_blockchain),
+                "garden_rs": ("garden-rs", self.branch_garden_rs),
+            },
+            "solana": {
+                "executor": ("solana-executor", self.branch_solana_executor),
+                "watcher": ("solana-watcher", self.branch_solana_watcher),
+                "relayer": ("solana-relayer", self.branch_solana_relayer),
+                "native_swaps": ("solana-native-swaps", self.branch_solana_native_swaps),
+                "spl_swaps": ("solana-spl-swaps", self.branch_solana_spl_swaps),
+            },
+        }.get(chain, {})
+
+    def gitea_solver_repos(self) -> dict[str, tuple[str, str]]:
+        """Gitea repos for the solver ecosystem (chain-agnostic)."""
+        return {
+            "solver_engine": ("solver-engine", "staging"),
+            "solver_comms": ("solver-comms", "staging"),
+            "solver_agg": ("solver-agg-v2", "staging"),
+            "solver_daemon": ("solver", "stage"),
+        }
 
 
 settings = Settings()
