@@ -159,18 +159,18 @@ class OpenAIProvider(LLMProvider):
                                 })
 
                     entry: dict = {"role": "assistant"}
-                    entry["content"] = "\n".join(text_parts) if text_parts else None
+                    entry["content"] = "\n".join(text_parts) if text_parts else ""
                     if tool_calls:
                         entry["tool_calls"] = tool_calls
                     oai.append(entry)
                 else:
-                    oai.append({"role": "assistant", "content": str(content) if content else None})
+                    oai.append({"role": "assistant", "content": str(content) if content else ""})
 
         return oai
 
     def build_assistant_message(self, response: LLMResponse) -> dict:
         """Build OpenAI-style assistant message from normalized response."""
-        entry: dict = {"role": "assistant", "content": response.text}
+        entry: dict = {"role": "assistant", "content": response.text or ""}
         if response.tool_calls:
             entry["tool_calls"] = [
                 {
