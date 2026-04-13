@@ -7,8 +7,43 @@ _ENV_FILE = Path(__file__).parent / ".env"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(_ENV_FILE), env_file_encoding="utf-8", extra="ignore")
 
+    # LLM Provider — "anthropic" or "openai"
+    llm_provider: str = "anthropic"
+
     # Anthropic
-    anthropic_api_key: str
+    anthropic_api_key: str = ""
+
+    # OpenAI
+    openai_api_key: str = ""
+
+    # Model names per tier (defaults set per provider)
+    # Specialist: deep reasoning agent (expensive, most capable)
+    specialist_model: str = ""
+    # Fast: log agent + on-chain agent (cheap, fast)
+    fast_model: str = ""
+    # Study: offline knowledge generation agent
+    study_model: str = ""
+
+    def get_specialist_model(self) -> str:
+        if self.specialist_model:
+            return self.specialist_model
+        if self.llm_provider == "openai":
+            return "gpt-4o"
+        return "claude-opus-4-6"
+
+    def get_fast_model(self) -> str:
+        if self.fast_model:
+            return self.fast_model
+        if self.llm_provider == "openai":
+            return "gpt-4o-mini"
+        return "claude-haiku-4-5-20251001"
+
+    def get_study_model(self) -> str:
+        if self.study_model:
+            return self.study_model
+        if self.llm_provider == "openai":
+            return "gpt-4o"
+        return "claude-opus-4-6"
 
     # Server auth — required; set SERVER_SECRET in .env
     server_secret: str

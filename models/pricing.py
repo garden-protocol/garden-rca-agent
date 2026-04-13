@@ -1,10 +1,11 @@
 """
-Anthropic model pricing — cost per million tokens (USD).
-Update this when Anthropic changes prices.
+LLM model pricing — cost per million tokens (USD).
+Covers Anthropic and OpenAI models used by the RCA pipeline.
 """
 
 # Cost per 1 million tokens, in USD
 _PRICING: dict[str, dict[str, float]] = {
+    # ── Anthropic ──
     "claude-haiku-4-5-20251001": {
         "input":       0.80,
         "output":      4.00,
@@ -22,6 +23,25 @@ _PRICING: dict[str, dict[str, float]] = {
         "output":      75.00,
         "cache_read":   1.50,
         "cache_write": 18.75,
+    },
+    # ── OpenAI ──
+    "gpt-4o": {
+        "input":       2.50,
+        "output":      10.00,
+        "cache_read":  0.0,
+        "cache_write": 0.0,
+    },
+    "gpt-4o-mini": {
+        "input":       0.15,
+        "output":      0.60,
+        "cache_read":  0.0,
+        "cache_write": 0.0,
+    },
+    "o4-mini": {
+        "input":       1.10,
+        "output":      4.40,
+        "cache_read":  0.0,
+        "cache_write": 0.0,
     },
 }
 
