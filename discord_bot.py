@@ -189,17 +189,20 @@ client = RCABot()
 
 
 @client.tree.command(name="investigate", description="Run RCA on a Garden order ID")
-@app_commands.describe(order_id="Order ID or full Garden Finance URL")
-async def investigate(interaction: discord.Interaction, order_id: str):
+@app_commands.describe(
+    order_id="Order ID or full Garden Finance URL",
+    investigate="Run full LLM analysis even for refunded/early-return orders (default: False)",
+)
+async def investigate(interaction: discord.Interaction, order_id: str, investigate: bool = False):
     # Acknowledge immediately — investigation can take 30-60s
     await interaction.response.defer(thinking=True)
 
     url = f"{RCA_AGENT_URL}/investigate/{SERVER_SECRET}"
-    logger.info("Investigating order %s via %s", order_id, url)
+    logger.info("Investigating order %s (investigate=%s) via %s", order_id, investigate, url)
 
     try:
         async with httpx.AsyncClient(timeout=300.0) as http:
-            resp = await http.post(url, json={"order_id": order_id})
+            resp = await http.post(url, json={"order_id": order_id, "investigate": investigate})
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as exc:
