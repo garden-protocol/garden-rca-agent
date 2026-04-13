@@ -4,18 +4,15 @@ Reads a cloned chain repo and generates a rich knowledge doc at knowledge/{chain
 Triggered via POST /study/{chain} — meant to be re-run whenever code changes significantly.
 """
 import subprocess
-import anthropic
 from pathlib import Path
 
 from config import settings
 from tools.repo import execute_repo_tool
+from providers import get_provider
 
 
-MODEL = "claude-opus-4-6"
 KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
 INCIDENTS_DIR = Path(__file__).parent.parent / "incidents"
-
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 SYSTEM_PROMPT = """\
 You are a code study agent. Your job is to deeply read a blockchain executor/watcher/relayer
@@ -184,45 +181,44 @@ def run(chain: str) -> str:
     from tools.repo import build_repo_tool_definitions
     tool_defs = build_repo_tool_definitions(chain)
 
+    provider = get_provider()
+    model = settings.get_study_model()
     messages = [{"role": "user", "content": user_message}]
 
     # Agentic loop with repo tools — capped to prevent runaway cost
     # 8 turns to allow thorough coverage of service repos + shared libraries
     for _turn in range(8):
-        response = client.messages.create(
-            model=MODEL,
+        response = provider.create_message(
+            model=model,
             max_tokens=16000,
-            thinking={"type": "adaptive"},
-            output_config={"effort": "high"},
             system=SYSTEM_PROMPT,
             tools=tool_defs,
             messages=messages,
+            # Anthropic-specific: extended thinking. Silently ignored by OpenAI provider.
+            thinking={"type": "adaptive"},
+            output_config={"effort": "high"},
         )
 
         if response.stop_reason == "end_turn":
             break
 
-        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-        if not tool_use_blocks:
+        if not response.tool_calls:
             break
 
-        messages.append({"role": "assistant", "content": response.content})
+        messages.append(provider.build_assistant_message(response))
 
         tool_results = []
-        for tool in tool_use_blocks:
-            result = execute_repo_tool(chain, tool.name, tool.input)
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tool.id,
-                "content": result,
-            })
+        for tc in response.tool_calls:
+            result = execute_repo_tool(chain, tc.name, tc.input)
+            tool_results.append((tc.id, result))
 
-        messages.append({"role": "user", "content": tool_results})
+        tr_msg = provider.build_tool_results_message(tool_results)
+        if isinstance(tr_msg, list):
+            messages.extend(tr_msg)
+        else:
+            messages.append(tr_msg)
 
-    knowledge_text = next(
-        (b.text for b in response.content if b.type == "text"),
-        "[Study agent returned no output]",
-    )
+    knowledge_text = response.text or "[Study agent returned no output]"
 
     # Write to disk
     KNOWLEDGE_DIR.mkdir(exist_ok=True)

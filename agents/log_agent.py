@@ -3,16 +3,12 @@ Log Intelligence Agent.
 Queries Loki for relevant log lines given an alert context,
 then returns a structured log summary for use by chain specialists.
 """
-import anthropic
 from datetime import datetime, timedelta, timezone
 from tools.loki import LOKI_TOOL_DEFINITIONS, execute_loki_tool
 from models.alert import Alert
-
-
-MODEL = "claude-haiku-4-5-20251001"
+from providers import get_provider
 
 from config import settings as _settings
-client = anthropic.Anthropic(api_key=_settings.anthropic_api_key)
 
 SYSTEM_PROMPT = """\
 You are a Log Intelligence Agent for Garden, a cross-chain bridge system.
@@ -130,14 +126,16 @@ def run(alert: Alert) -> dict:
         f"4. Return a structured markdown report of your findings."
     )
 
+    provider = get_provider()
+    model = _settings.get_fast_model()
     messages = [{"role": "user", "content": user_message}]
     all_log_lines: list[str] = []
     total_input = total_output = total_cache_read = total_cache_write = 0
 
     # Agentic loop — capped to prevent runaway cost
     for _turn in range(5):
-        response = client.messages.create(
-            model=MODEL,
+        response = provider.create_message(
+            model=model,
             max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=LOKI_TOOL_DEFINITIONS,
@@ -147,36 +145,32 @@ def run(alert: Alert) -> dict:
         u = response.usage
         total_input       += u.input_tokens
         total_output      += u.output_tokens
-        total_cache_read  += getattr(u, "cache_read_input_tokens", 0) or 0
-        total_cache_write += getattr(u, "cache_creation_input_tokens", 0) or 0
+        total_cache_read  += u.cache_read_tokens
+        total_cache_write += u.cache_creation_tokens
 
         if response.stop_reason == "end_turn":
             break
 
-        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-        if not tool_use_blocks:
+        if not response.tool_calls:
             break
 
-        messages.append({"role": "assistant", "content": response.content})
+        messages.append(provider.build_assistant_message(response))
 
         tool_results = []
-        for tool in tool_use_blocks:
-            result = execute_loki_tool(tool.name, tool.input)
+        for tc in response.tool_calls:
+            result = execute_loki_tool(tc.name, tc.input)
             # Collect raw lines for upstream use
             if result and not result.startswith("["):
                 all_log_lines.extend(result.splitlines())
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tool.id,
-                "content": result,
-            })
+            tool_results.append((tc.id, result))
 
-        messages.append({"role": "user", "content": tool_results})
+        tr_msg = provider.build_tool_results_message(tool_results)
+        if isinstance(tr_msg, list):
+            messages.extend(tr_msg)
+        else:
+            messages.append(tr_msg)
 
-    raw_text = next(
-        (b.text for b in response.content if b.type == "text"),
-        "[Log agent returned no summary]",
-    )
+    raw_text = response.text or "[Log agent returned no summary]"
 
     # Extract structured evidence from the trailing JSON block
     key_evidence = []
@@ -202,7 +196,7 @@ def run(alert: Alert) -> dict:
         "key_evidence": key_evidence,
         "raw_lines": all_log_lines[:500],  # kept for debugging, not shown to user
         "usage": {
-            "model": MODEL,
+            "model": model,
             "input_tokens": total_input,
             "output_tokens": total_output,
             "cache_read_tokens": total_cache_read,

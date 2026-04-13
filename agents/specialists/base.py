@@ -3,7 +3,6 @@ Base class for chain specialist agents.
 Each specialist knows the architecture of a specific chain's executor/watcher/relayer,
 reads the relevant source code, and synthesizes root cause from logs + on-chain data.
 """
-import anthropic
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -14,13 +13,12 @@ from tools.gitea import (
     build_gitea_tool_definitions,
     execute_gitea_tool,
 )
+from providers import get_provider
 
 
-MODEL = "claude-opus-4-6"
 KNOWLEDGE_DIR = Path(__file__).parent.parent.parent / "knowledge"
 
 from config import settings as _settings
-client = anthropic.Anthropic(api_key=_settings.anthropic_api_key)
 
 
 class BaseSpecialist(ABC):
@@ -174,6 +172,8 @@ class BaseSpecialist(ABC):
             f"root_cause must be 1-2 sentences max."
         )
 
+        provider = get_provider()
+        model = _settings.get_specialist_model()
         messages = [{"role": "user", "content": user_message}]
         chain = self.chain  # capture for closure in tool execution
         total_input = total_output = total_cache_read = total_cache_write = 0
@@ -183,8 +183,8 @@ class BaseSpecialist(ABC):
             u = resp.usage
             total_input       += u.input_tokens
             total_output      += u.output_tokens
-            total_cache_read  += getattr(u, "cache_read_input_tokens", 0) or 0
-            total_cache_write += getattr(u, "cache_creation_input_tokens", 0) or 0
+            total_cache_read  += u.cache_read_tokens
+            total_cache_write += u.cache_creation_tokens
 
         # Determine tool source: local filesystem > Gitea API > knowledge-only
         from config import settings as _cfg
@@ -209,8 +209,8 @@ class BaseSpecialist(ABC):
         if tool_defs:
             # Agentic loop with code tools (filesystem or Gitea)
             for _turn in range(max_turns):
-                response = client.messages.create(
-                    model=MODEL,
+                response = provider.create_message(
+                    model=model,
                     max_tokens=8192,
                     system=self._build_system(),
                     tools=tool_defs,
@@ -221,46 +221,46 @@ class BaseSpecialist(ABC):
                 if response.stop_reason == "end_turn":
                     break
 
-                tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-                if not tool_use_blocks:
+                if not response.tool_calls:
                     break
 
-                messages.append({"role": "assistant", "content": response.content})
+                messages.append(provider.build_assistant_message(response))
 
                 tool_results = []
-                for tool in tool_use_blocks:
-                    result = tool_executor(tool.name, tool.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool.id,
-                        "content": result,
-                    })
+                for tc in response.tool_calls:
+                    result = tool_executor(tc.name, tc.input)
+                    tool_results.append((tc.id, result))
 
-                messages.append({"role": "user", "content": tool_results})
+                tr_msg = provider.build_tool_results_message(tool_results)
+                if isinstance(tr_msg, list):
+                    messages.extend(tr_msg)
+                else:
+                    messages.append(tr_msg)
 
             # If the loop hit the turn cap with no text in the last response (still mid-tool-use),
             # satisfy pending tool_use blocks then force a written summary.
-            if not any(b.type == "text" for b in response.content):
-                pending_tool_uses = [b for b in response.content if b.type == "tool_use"]
-                messages.append({"role": "assistant", "content": response.content})
+            if not response.text and response.tool_calls:
+                messages.append(provider.build_assistant_message(response))
+
                 stub_results = [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool.id,
-                        "content": "Tool call limit reached — no result available.",
-                    }
-                    for tool in pending_tool_uses
+                    (tc.id, "Tool call limit reached — no result available.")
+                    for tc in response.tool_calls
                 ]
-                stub_results.append({
-                    "type": "text",
-                    "text": (
+                tr_msg = provider.build_tool_results_message(stub_results)
+                if isinstance(tr_msg, list):
+                    messages.extend(tr_msg)
+                else:
+                    messages.append(tr_msg)
+
+                messages.append({
+                    "role": "user",
+                    "content": (
                         "You have used the maximum number of tool calls. "
                         "Based on everything gathered so far, write your complete root cause analysis now."
                     ),
                 })
-                messages.append({"role": "user", "content": stub_results})
-                response = client.messages.create(
-                    model=MODEL,
+                response = provider.create_message(
+                    model=model,
                     max_tokens=8192,
                     system=self._build_system(),
                     messages=messages,
@@ -268,18 +268,15 @@ class BaseSpecialist(ABC):
                 _accumulate(response)
         else:
             # No code tools available — analyse from knowledge docs only
-            response = client.messages.create(
-                model=MODEL,
+            response = provider.create_message(
+                model=model,
                 max_tokens=8192,
                 system=self._build_system(),
                 messages=messages,
             )
             _accumulate(response)
 
-        raw_analysis = next(
-            (b.text for b in response.content if b.type == "text"),
-            "[Specialist returned no analysis]",
-        )
+        raw_analysis = response.text or "[Specialist returned no analysis]"
 
         # Parse the trailing JSON block
         structured = _extract_json_block(raw_analysis)
@@ -293,7 +290,7 @@ class BaseSpecialist(ABC):
             "confidence": structured.get("confidence", "low"),
             "raw_analysis": raw_analysis,
             "usage": {
-                "model": MODEL,
+                "model": model,
                 "input_tokens": total_input,
                 "output_tokens": total_output,
                 "cache_read_tokens": total_cache_read,

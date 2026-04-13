@@ -2,14 +2,10 @@
 Base class for on-chain query agents.
 Each chain inherits from this and implements chain-specific RPC tools.
 """
-import anthropic
 from abc import ABC, abstractmethod
-
-
-MODEL = "claude-haiku-4-5-20251001"
+from providers import get_provider
 
 from config import settings as _settings
-client = anthropic.Anthropic(api_key=_settings.anthropic_api_key)
 
 
 class BaseOnChainAgent(ABC):
@@ -63,14 +59,16 @@ class BaseOnChainAgent(ABC):
         if context:
             user_content = f"Context from logs/alert:\n{context}\n\nQuestion: {question}"
 
+        provider = get_provider()
+        model = _settings.get_fast_model()
         messages = [{"role": "user", "content": user_content}]
         tool_calls_made = []
         total_input = total_output = total_cache_read = total_cache_write = 0
 
         # Agentic loop — capped to prevent runaway cost
         for _turn in range(5):
-            response = client.messages.create(
-                model=MODEL,
+            response = provider.create_message(
+                model=model,
                 max_tokens=4096,
                 system=system,
                 tools=self.tool_definitions,
@@ -80,41 +78,37 @@ class BaseOnChainAgent(ABC):
             u = response.usage
             total_input       += u.input_tokens
             total_output      += u.output_tokens
-            total_cache_read  += getattr(u, "cache_read_input_tokens", 0) or 0
-            total_cache_write += getattr(u, "cache_creation_input_tokens", 0) or 0
+            total_cache_read  += u.cache_read_tokens
+            total_cache_write += u.cache_creation_tokens
 
             if response.stop_reason == "end_turn":
                 break
 
-            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-            if not tool_use_blocks:
+            if not response.tool_calls:
                 break
 
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append(provider.build_assistant_message(response))
 
             tool_results = []
-            for tool in tool_use_blocks:
-                result = self.execute_tool(tool.name, tool.input)
-                tool_calls_made.append({"tool": tool.name, "input": tool.input, "result": result})
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool.id,
-                    "content": result,
-                })
+            for tc in response.tool_calls:
+                result = self.execute_tool(tc.name, tc.input)
+                tool_calls_made.append({"tool": tc.name, "input": tc.input, "result": result})
+                tool_results.append((tc.id, result))
 
-            messages.append({"role": "user", "content": tool_results})
+            tr_msg = provider.build_tool_results_message(tool_results)
+            if isinstance(tr_msg, list):
+                messages.extend(tr_msg)
+            else:
+                messages.append(tr_msg)
 
         # Extract final text
-        findings = next(
-            (b.text for b in response.content if b.type == "text"),
-            "[No findings returned]",
-        )
+        findings = response.text or "[No findings returned]"
 
         return {
             "findings": findings,
             "tool_calls": tool_calls_made,
             "usage": {
-                "model": MODEL,
+                "model": model,
                 "input_tokens": total_input,
                 "output_tokens": total_output,
                 "cache_read_tokens": total_cache_read,
