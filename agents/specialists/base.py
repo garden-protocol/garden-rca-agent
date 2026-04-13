@@ -281,10 +281,18 @@ class BaseSpecialist(ABC):
         # Parse the trailing JSON block
         structured = _extract_json_block(raw_analysis)
 
+        # Coerce fields that must be strings — some providers return lists for bullet points
+        root_cause = structured.get("root_cause", raw_analysis[:500])
+        if isinstance(root_cause, list):
+            root_cause = " ".join(root_cause)
+        investigation_summary = structured.get("investigation_summary", "")
+        if isinstance(investigation_summary, list):
+            investigation_summary = "\n".join(f"- {item}" for item in investigation_summary)
+
         return {
-            "root_cause": structured.get("root_cause", raw_analysis[:500]),
+            "root_cause": root_cause,
             "affected_components": structured.get("affected_components", []),
-            "investigation_summary": structured.get("investigation_summary", ""),
+            "investigation_summary": investigation_summary,
             "remediation_actions": structured.get("remediation_actions", []),
             "severity": structured.get("severity", "medium"),
             "confidence": structured.get("confidence", "low"),
