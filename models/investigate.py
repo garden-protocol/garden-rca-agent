@@ -43,6 +43,7 @@ class InvestigateRequest(BaseModel):
       - "https://api.garden.finance/v2/orders/7ac235..."
     """
     order_id: str
+    investigate: bool = False  # when True, run full LLM pipeline even for early-return states (e.g. refunds)
 
 
 class InvestigateResponse(BaseModel):

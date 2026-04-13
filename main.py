@@ -76,7 +76,7 @@ async def investigate_order(server_secret: str, req: InvestigateRequest):
 
     logger.info("Investigate request: order=%s", req.order_id)
     try:
-        response = await asyncio.to_thread(orchestrator.investigate, req.order_id)
+        response = await asyncio.to_thread(orchestrator.investigate, req.order_id, req.investigate)
         logger.info(
             "Investigate complete: order=%s state=%s early_return=%s duration=%.1fs",
             response.order_id,

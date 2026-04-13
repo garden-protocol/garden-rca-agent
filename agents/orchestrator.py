@@ -81,7 +81,7 @@ def _refund_context(
 
 # ── Investigation pipeline ────────────────────────────────────────────────────
 
-def investigate(raw_order_id: str) -> InvestigateResponse:
+def investigate(raw_order_id: str, force_investigate: bool = False) -> InvestigateResponse:
     """
     Order-state-aware investigation pipeline.
 
@@ -151,6 +151,14 @@ def investigate(raw_order_id: str) -> InvestigateResponse:
                 lifetime_str = (
                     f"Order lifetime (created_at to deadline): {lifetime_mins:.0f} minutes. "
                 )
+
+        if not force_investigate:
+            return _early(
+                f"Order has been refunded. {lifetime_str}{refund_context} "
+                f"Re-run with investigate=true to trigger full LLM analysis."
+            )
+
+        # Full LLM investigation requested
         alert = _build_alert_from_order(order_id, order, state, src_chain, dst_chain)
         alert.message = (
             f"Order {order_id} has been refunded. {lifetime_str}{refund_context} "
