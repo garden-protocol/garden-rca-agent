@@ -3,6 +3,7 @@ Garden RCA Agent — FastAPI entrypoint.
 
 Endpoints:
   POST /investigate/{server_secret} — order-state-aware investigation (auth required)
+  POST /explore/{server_secret}     — codebase Q&A (auth required)
   POST /study/{chain}               — study a chain's repo and generate knowledge doc
   GET  /health                      — health check
 """
@@ -15,7 +16,10 @@ from fastapi import FastAPI, HTTPException
 
 from config import settings
 from models.investigate import InvestigateRequest, InvestigateResponse
+from models.explore import ExploreRequest, ExploreResponse
+from models.investigate import AgentTokenUsage
 import agents.orchestrator as orchestrator
+import agents.explore_agent as explore_agent
 import study.study_agent as study_agent
 
 
@@ -87,6 +91,56 @@ async def investigate_order(server_secret: str, req: InvestigateRequest):
         return response
     except Exception as exc:
         logger.exception("Investigation failed for order %s", req.order_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/explore/{server_secret}", response_model=ExploreResponse)
+async def explore_codebase(server_secret: str, req: ExploreRequest):
+    """
+    Codebase Q&A endpoint (auth required via path secret).
+
+    Accepts a natural language question about any repo in the Gitea org.
+    The agent resolves which repo to explore from the question text
+    (or uses keyword/knowledge-doc matching if no repo is named explicitly),
+    then searches and reads source code to answer.
+    """
+    if server_secret != settings.server_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    logger.info("Explore request: %s", req.question[:120])
+    start = time.monotonic()
+    try:
+        result = await asyncio.to_thread(explore_agent.run, req.question)
+        duration = round(time.monotonic() - start, 1)
+
+        usage = result.get("usage") or {}
+        ai_cost = AgentTokenUsage(
+            model=usage.get("model", ""),
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            cache_read_tokens=usage.get("cache_read_tokens", 0),
+            cache_write_tokens=usage.get("cache_write_tokens", 0),
+            cost_usd=usage.get("cost_usd", 0.0),
+        ) if usage else None
+
+        from datetime import datetime
+        response = ExploreResponse(
+            answer=result["answer"],
+            repo_name=result.get("repo_name"),
+            branch=result.get("branch"),
+            ai_cost=ai_cost,
+            generated_at=datetime.utcnow(),
+            duration_seconds=duration,
+        )
+        logger.info(
+            "Explore complete: repo=%s duration=%.1fs cost=$%.4f",
+            response.repo_name or "unresolved",
+            duration,
+            ai_cost.cost_usd if ai_cost else 0.0,
+        )
+        return response
+    except Exception as exc:
+        logger.exception("Explore failed for question: %s", req.question[:120])
         raise HTTPException(status_code=500, detail=str(exc))
 
 

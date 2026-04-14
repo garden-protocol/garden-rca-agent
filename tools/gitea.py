@@ -325,6 +325,334 @@ def execute_gitea_tool(chain: str, tool_name: str, tool_input: dict) -> str:
     return f"[Unknown gitea tool: {tool_name}]"
 
 
+def list_org_repos() -> list[dict]:
+    """
+    List all repos in the configured Gitea org.
+    Returns a list of {name, description, default_branch} dicts.
+    """
+    if not is_configured():
+        return []
+
+    owner = settings.gitea_org
+    url = _api(f"/orgs/{owner}/repos")
+    all_repos = []
+    page = 1
+
+    try:
+        while True:
+            resp = httpx.get(
+                url,
+                headers=_headers(),
+                params={"page": page, "limit": 50},
+                timeout=_TIMEOUT,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            for r in batch:
+                all_repos.append({
+                    "name": r.get("name", ""),
+                    "description": r.get("description", ""),
+                    "default_branch": r.get("default_branch", "main"),
+                })
+            page += 1
+        return all_repos
+    except Exception as e:
+        logger.error("Failed to list org repos: %s", e)
+        return []
+
+
+def read_file_by_repo(repo_name: str, path: str, branch: str = "main") -> str:
+    """Read a file from a Gitea repo by direct repo name (not chain-scoped)."""
+    owner = settings.gitea_org
+    encoded_path = path.lstrip("/")
+    url = _api(f"/repos/{owner}/{repo_name}/contents/{encoded_path}")
+
+    try:
+        resp = httpx.get(
+            url,
+            headers=_headers(),
+            params={"ref": branch},
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code == 404:
+            return f"[File not found: {repo_name}/{path} (branch: {branch})]"
+        resp.raise_for_status()
+        data = resp.json()
+
+        if isinstance(data, list):
+            return f"[Path is a directory, not a file: {repo_name}/{path}. Use list_directory instead.]"
+
+        content_b64 = data.get("content", "")
+        if not content_b64:
+            return f"[Empty file: {repo_name}/{path}]"
+
+        content = base64.b64decode(content_b64).decode("utf-8", errors="replace")
+        if len(content) > 8000:
+            content = content[:8000] + f"\n\n[... truncated, file is {len(content)} chars total ...]"
+        return content
+    except httpx.HTTPStatusError as e:
+        return f"[Gitea API error reading {repo_name}/{path}: HTTP {e.response.status_code}]"
+    except Exception as e:
+        return f"[Gitea API error: {e}]"
+
+
+def search_code_by_repo(repo_name: str, pattern: str, branch: str = "main") -> str:
+    """Search a Gitea repo for a pattern by direct repo name (not chain-scoped)."""
+    owner = settings.gitea_org
+
+    try:
+        tree_url = _api(f"/repos/{owner}/{repo_name}/git/trees/{branch}")
+        resp = httpx.get(
+            tree_url,
+            headers=_headers(),
+            params={"recursive": "true"},
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        tree = resp.json()
+
+        source_extensions = {
+            ".go", ".rs", ".ts", ".js", ".py", ".sol", ".toml", ".yaml", ".yml",
+            ".json", ".tsx", ".jsx",
+        }
+        candidate_files = []
+        for entry in tree.get("tree", []):
+            if entry.get("type") != "blob":
+                continue
+            path = entry.get("path", "")
+            parts = path.split("/")
+            if any(p in SKIP_PATTERNS for p in parts):
+                continue
+            if any(path.endswith(ext) for ext in SKIP_EXTENSIONS):
+                continue
+            if any(path.endswith(ext) for ext in source_extensions):
+                candidate_files.append(path)
+
+        pattern_lower = pattern.lower()
+        name_matches = [f for f in candidate_files if pattern_lower in f.lower()]
+        other_files = [f for f in candidate_files if f not in name_matches]
+        files_to_check = (name_matches + other_files)[:20]
+
+        results = []
+        for file_path in files_to_check:
+            content = read_file_by_repo(repo_name, file_path, branch)
+            if content.startswith("["):
+                continue
+            lines = content.split("\n")
+            for i, line in enumerate(lines):
+                if pattern_lower in line.lower():
+                    start = max(0, i - 2)
+                    end = min(len(lines), i + 3)
+                    context = "\n".join(
+                        f"{'>' if j == i else ' '} {j+1}: {lines[j]}"
+                        for j in range(start, end)
+                    )
+                    results.append(f"--- {repo_name}/{file_path} ---\n{context}")
+
+            if len(results) >= 15:
+                break
+
+        if not results:
+            return f"[No matches for '{pattern}' in {repo_name} (searched {len(files_to_check)} files)]"
+
+        output = "\n\n".join(results)
+        if len(output) > 6000:
+            output = output[:6000] + "\n[... truncated ...]"
+        return output
+    except Exception as e:
+        return f"[Gitea search error: {e}]"
+
+
+def list_directory_by_repo(repo_name: str, path: str = ".", max_depth: int = 3, branch: str = "main") -> str:
+    """List directory tree of a Gitea repo by direct repo name (not chain-scoped)."""
+    owner = settings.gitea_org
+
+    if path == ".":
+        try:
+            tree_url = _api(f"/repos/{owner}/{repo_name}/git/trees/{branch}")
+            resp = httpx.get(
+                tree_url,
+                headers=_headers(),
+                params={"recursive": "true"},
+                timeout=_TIMEOUT,
+            )
+            resp.raise_for_status()
+            tree = resp.json()
+
+            lines = [f"{repo_name}/"]
+            for entry in sorted(tree.get("tree", []), key=lambda e: e.get("path", "")):
+                entry_path = entry.get("path", "")
+                parts = entry_path.split("/")
+                if len(parts) > max_depth:
+                    continue
+                if any(p in SKIP_PATTERNS for p in parts):
+                    continue
+                if any(entry_path.endswith(ext) for ext in SKIP_EXTENSIONS):
+                    continue
+                indent = "  " * len(parts)
+                name = parts[-1]
+                if entry.get("type") == "tree":
+                    lines.append(f"{indent}{name}/")
+                else:
+                    lines.append(f"{indent}{name}")
+
+            result = "\n".join(lines)
+            if len(result) > 6000:
+                result = result[:6000] + "\n[... truncated ...]"
+            return result
+        except Exception as e:
+            return f"[Gitea tree error: {e}]"
+    else:
+        encoded_path = path.lstrip("/")
+        url = _api(f"/repos/{owner}/{repo_name}/contents/{encoded_path}")
+        try:
+            resp = httpx.get(
+                url,
+                headers=_headers(),
+                params={"ref": branch},
+                timeout=_TIMEOUT,
+            )
+            if resp.status_code == 404:
+                return f"[Directory not found: {repo_name}/{path}]"
+            resp.raise_for_status()
+            data = resp.json()
+
+            if not isinstance(data, list):
+                return f"[Path is a file, not a directory: {repo_name}/{path}]"
+
+            lines = [f"{path}/"]
+            for entry in sorted(data, key=lambda e: (e.get("type", "") != "dir", e.get("name", ""))):
+                name = entry.get("name", "")
+                if name in SKIP_PATTERNS or name.startswith("."):
+                    continue
+                if entry.get("type") == "dir":
+                    lines.append(f"  {name}/")
+                else:
+                    if any(name.endswith(ext) for ext in SKIP_EXTENSIONS):
+                        continue
+                    lines.append(f"  {name}")
+
+            return "\n".join(lines)
+        except Exception as e:
+            return f"[Gitea directory error: {e}]"
+
+
+def execute_explore_tool(tool_name: str, tool_input: dict) -> str:
+    """Execute a Gitea tool call for the explore agent (repo-name-based, not chain-scoped)."""
+    repo_name = tool_input.get("repo_name", "")
+    branch = tool_input.get("branch", "main")
+
+    if tool_name == "read_file":
+        return read_file_by_repo(repo_name, tool_input["path"], branch)
+    elif tool_name == "search_code":
+        return search_code_by_repo(repo_name, tool_input["pattern"], branch)
+    elif tool_name == "list_directory":
+        return list_directory_by_repo(
+            repo_name,
+            tool_input.get("path", "."),
+            tool_input.get("max_depth", 3),
+            branch,
+        )
+    return f"[Unknown explore tool: {tool_name}]"
+
+
+def build_explore_tool_definitions(repo_name: str, branch: str) -> list[dict]:
+    """
+    Build tool definitions for the explore agent — scoped to a specific repo by name.
+    """
+    return [
+        {
+            "name": "read_file",
+            "description": (
+                f"Read a source file from the '{repo_name}' repo (branch: {branch}). "
+                "Path is relative to the repo root."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path from repo root, e.g. 'src/main.rs'",
+                    },
+                    "repo_name": {
+                        "type": "string",
+                        "description": f"Gitea repo name. Default: '{repo_name}'",
+                        "default": repo_name,
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": f"Git branch. Default: '{branch}'",
+                        "default": branch,
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "search_code",
+            "description": (
+                f"Search the '{repo_name}' repo for a text pattern. "
+                "Returns matching lines with context. Searches source files "
+                "(.go, .rs, .ts, .js, .sol, .py, .toml, etc.)."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Text pattern to search for (case-insensitive)",
+                    },
+                    "repo_name": {
+                        "type": "string",
+                        "description": f"Gitea repo name. Default: '{repo_name}'",
+                        "default": repo_name,
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": f"Git branch. Default: '{branch}'",
+                        "default": branch,
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+        {
+            "name": "list_directory",
+            "description": (
+                f"List the directory tree of the '{repo_name}' repo. "
+                "Use path='.' for repo root."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to list (default: '.' = repo root)",
+                        "default": ".",
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Max directory depth to show (default 3)",
+                        "default": 3,
+                    },
+                    "repo_name": {
+                        "type": "string",
+                        "description": f"Gitea repo name. Default: '{repo_name}'",
+                        "default": repo_name,
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": f"Git branch. Default: '{branch}'",
+                        "default": branch,
+                    },
+                },
+            },
+        },
+    ]
+
+
 def build_gitea_tool_definitions(chain: str) -> list[dict]:
     """
     Build tool definitions for Gitea-based code access.

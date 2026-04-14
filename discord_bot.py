@@ -223,6 +223,69 @@ async def investigate(interaction: discord.Interaction, order_id: str, investiga
     await interaction.followup.send(embed=embed)
 
 
+def _build_explore_embed(data: dict) -> discord.Embed:
+    answer    = data.get("answer", "No answer returned.")
+    repo_name = data.get("repo_name", "unknown")
+    branch    = data.get("branch", "?")
+    ai_cost   = data.get("ai_cost")
+    duration  = data.get("duration_seconds", "?")
+
+    embed = discord.Embed(
+        title=f"Explore — {repo_name or 'cross-repo'}",
+        description=_truncate(answer, 4000),
+        colour=discord.Colour.blue(),
+    )
+    if repo_name:
+        embed.add_field(name="Repo",     value=f"`{repo_name}`",  inline=True)
+        embed.add_field(name="Branch",   value=f"`{branch}`",     inline=True)
+    embed.add_field(name="Duration", value=f"{duration}s", inline=True)
+
+    if ai_cost:
+        cost = ai_cost.get("cost_usd", 0.0)
+        model = ai_cost.get("model", "?")
+        embed.add_field(name="AI Cost", value=f"${cost:.4f} ({model})", inline=True)
+
+    embed.set_footer(text="Garden RCA Agent — Explore")
+    return embed
+
+
+@client.tree.command(name="explore", description="Ask a question about the codebase")
+@app_commands.describe(
+    question="Natural language question, e.g. 'What is the default price protection in cobi-v2?'",
+)
+async def explore(interaction: discord.Interaction, question: str):
+    await interaction.response.defer(thinking=True)
+
+    url = f"{RCA_AGENT_URL}/explore/{SERVER_SECRET}"
+    logger.info("Explore question: %s via %s", question[:120], url)
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as http:
+            resp = await http.post(url, json={"question": question})
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as exc:
+        await interaction.followup.send(
+            f"RCA agent returned `{exc.response.status_code}`: {exc.response.text[:500]}"
+        )
+        return
+    except Exception as exc:
+        logger.exception("Explore request failed")
+        await interaction.followup.send(f"Failed to reach RCA agent: {exc}")
+        return
+
+    embed = _build_explore_embed(data)
+
+    # If answer is too long for embed description (>4096), send as file attachment too
+    answer = data.get("answer", "")
+    if len(answer) > 4000:
+        import io
+        file = discord.File(io.BytesIO(answer.encode()), filename="explore_answer.md")
+        await interaction.followup.send(embed=embed, file=file)
+    else:
+        await interaction.followup.send(embed=embed)
+
+
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:
         raise RuntimeError("DISCORD_BOT_TOKEN is not set")
