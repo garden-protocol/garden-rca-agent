@@ -13,6 +13,7 @@ from tools.gitea import (
     build_gitea_tool_definitions,
     execute_gitea_tool,
 )
+from tools.loki import LOKI_TOOL_DEFINITIONS, execute_loki_tool
 from providers import get_provider
 
 
@@ -82,6 +83,10 @@ class BaseSpecialist(ABC):
         alert: Alert,
         log_summary: str,
         onchain_findings: dict | None = None,
+        log_window_start: str | None = None,
+        log_window_end: str | None = None,
+        solver_id: str = "",
+        onchain_agent: "BaseOnChainAgent | None" = None,
     ) -> dict:
         """
         Analyze the alert using log data and optional on-chain findings.
@@ -211,17 +216,43 @@ class BaseSpecialist(ABC):
         )
 
         if repos_on_disk:
-            tool_defs = build_repo_tool_definitions(chain)
-            tool_executor = lambda name, inp: execute_repo_tool(chain, name, inp)
-            max_turns = 25
+            repo_tool_defs = build_repo_tool_definitions(chain)
+            repo_executor = lambda name, inp: execute_repo_tool(chain, name, inp)
+            max_turns = 35
         elif gitea_configured():
-            tool_defs = build_gitea_tool_definitions(chain)
-            tool_executor = lambda name, inp: execute_gitea_tool(chain, name, inp)
-            max_turns = 15  # fewer turns for API-based tools (slower per call)
+            repo_tool_defs = build_gitea_tool_definitions(chain)
+            repo_executor = lambda name, inp: execute_gitea_tool(chain, name, inp)
+            max_turns = 20
         else:
-            tool_defs = None
-            tool_executor = None
+            repo_tool_defs = []
+            repo_executor = None
             max_turns = 0
+
+        # Loki tools: included only when window is provided
+        loki_enabled = bool(log_window_start and log_window_end)
+        loki_tool_defs = list(LOKI_TOOL_DEFINITIONS) if loki_enabled else []
+
+        # On-chain tools: included only when an agent is provided
+        onchain_tool_defs = list(onchain_agent.tool_definitions) if onchain_agent else []
+        onchain_tool_names = {t["name"] for t in onchain_tool_defs}
+
+        tool_defs = (repo_tool_defs or []) + loki_tool_defs + onchain_tool_defs
+        if not tool_defs:
+            tool_defs = None
+
+        LOKI_TOOL_NAMES = {"query_loki", "search_by_order_id", "search_by_service"}
+
+        def tool_executor(name, inp):
+            if name in LOKI_TOOL_NAMES:
+                return execute_loki_tool(name, inp)
+            if name in onchain_tool_names and onchain_agent is not None:
+                return onchain_agent.execute_tool(name, inp)
+            if repo_executor is not None:
+                return repo_executor(name, inp)
+            return f"[no executor available for tool: {name}]"
+
+        if max_turns == 0 and tool_defs:
+            max_turns = 15
 
         if tool_defs:
             # Agentic loop with code tools (filesystem or Gitea)
