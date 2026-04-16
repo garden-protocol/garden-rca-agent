@@ -26,6 +26,36 @@ creation timestamp, not the current time.
 When a solver_id is provided, ALWAYS pass it to search_by_order_id and search_by_service \
 calls. This filters executor logs to the specific solver that handled the order.
 
+## Service Routing Guide
+
+When calling search_by_service, choose the service based on what you want to find:
+
+- `executor` — chain executor logs (evm-executor, solana-executor, etc.).
+  Required: `chain`, `network`. Use when chasing an action after the solver-engine
+  has mapped it to Initiate/Redeem/Refund.
+
+- `watcher` — chain watcher logs (evm-watcher, solana-watcher, etc.).
+  Required: `chain`, `network`. Use to see DB state transitions, event parsing
+  failures, confirmation lag.
+
+- `relayer` — chain relayer logs (evm-relay, solana-relayer, etc.).
+  Required: `chain`, `network`. Use for user-facing initiate/redeem flow issues.
+
+- `solver-engine` — SHARED, solver-scoped. Use for NoOp decisions, order
+  mapping (Initiate / Redeem / Refund / NoOp), order lock/unlock events,
+  status-watcher behaviour. Pass solver_id. `chain`/`network` are ignored.
+
+- `solver-comms` — SHARED, solver-scoped. Use for liquidity snapshots,
+  committed-funds lag, aggregator sync failures. Pass solver_id. `chain`/`network`
+  are ignored.
+
+- `orderbook` — SHARED, non-solver-scoped. Use for order creation / status
+  transitions; contains quote service logs as well. `chain`/`network`/solver_id
+  are ignored.
+
+Rule of thumb for `missed_init`: start with solver-engine (NoOp? lock stuck?),
+then orderbook (status valid?), then executor (action received and submitted?).
+
 ## Output Format
 
 Your output MUST end with a ```json block containing structured evidence:
