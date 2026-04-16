@@ -10,6 +10,20 @@ class LogEvidence(BaseModel):
     source: str = ""  # service name (e.g. "executor", "watcher")
 
 
+class TimelineEvent(BaseModel):
+    """A single event in the incident timeline."""
+    timestamp: str = ""   # ISO8601 preferred; may be "t+30s" if relative
+    event: str
+    source: str = ""      # "logs" | "onchain" | "alert" | "orderbook"
+
+
+class ReportLink(BaseModel):
+    """A click-through link for the report (block explorer, source code, etc.)."""
+    label: str
+    url: str
+    kind: str = ""        # "tx" | "code" | "address" | "order"
+
+
 class RCAReport(BaseModel):
     order_id: str
     chain: str
@@ -24,5 +38,9 @@ class RCAReport(BaseModel):
     severity: Literal["critical", "high", "medium", "low"]
     confidence: Literal["high", "medium", "low"]
     raw_analysis: str                       # full markdown report from specialist
+    timeline: list[TimelineEvent] = []
+    hypotheses_ruled_out: list[str] = []
+    next_action: str = ""
+    links: list[ReportLink] = []
     generated_at: datetime
     duration_seconds: float

@@ -621,7 +621,8 @@ def run(alert: Alert) -> tuple[RCAReport, AICost]:
     duration = time.monotonic() - started_at
 
     # Build key log evidence from LLM-curated evidence (preferred) or fallback
-    from models.report import LogEvidence
+    from models.report import LogEvidence, TimelineEvent, ReportLink
+    from tools.links import generate_report_links
     key_log_evidence = []
     for ev in log_result.get("key_evidence", []):
         if isinstance(ev, dict) and ev.get("line"):
@@ -632,6 +633,23 @@ def run(alert: Alert) -> tuple[RCAReport, AICost]:
             ))
     # Cap at 10 evidence items
     key_log_evidence = key_log_evidence[:10]
+
+    # Generate links from data we already have
+    try:
+        links_list = generate_report_links(
+            alert=alert,
+            onchain_evidence=_serialize_onchain(onchain_result),
+            affected_components=specialist_result.get("affected_components", []),
+        )
+    except Exception as exc:
+        logger.warning("Link generation failed: %s", exc)
+        links_list = []
+
+    # Coerce timeline dicts → TimelineEvent
+    timeline_events: list[TimelineEvent] = []
+    for entry in specialist_result.get("timeline", []):
+        if isinstance(entry, dict):
+            timeline_events.append(TimelineEvent(**entry))
 
     report = RCAReport(
         order_id=alert.order_id,
@@ -647,6 +665,10 @@ def run(alert: Alert) -> tuple[RCAReport, AICost]:
         severity=specialist_result["severity"],
         confidence=specialist_result["confidence"],
         raw_analysis=specialist_result["raw_analysis"],
+        timeline=timeline_events,
+        hypotheses_ruled_out=specialist_result.get("hypotheses_ruled_out", []),
+        next_action=specialist_result.get("next_action", ""),
+        links=links_list,
         generated_at=datetime.now(timezone.utc),
         duration_seconds=round(duration, 2),
     )
