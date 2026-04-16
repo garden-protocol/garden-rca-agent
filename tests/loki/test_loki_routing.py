@@ -94,3 +94,20 @@ def test_solver_comms_routes_to_solver_loki():
     assert captured["base_url"] == "http://solver.loki"
     assert 'service_name="solver-comms"' in captured["logql"]
     assert 'solver_id="s-999"' in captured["logql"]
+
+
+# ── Primary-shared service routing ───────────────────────────────────────────
+
+def test_orderbook_routes_to_primary_loki():
+    """orderbook → primary Loki, uses configured service_name, ignores solver_id."""
+    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
+        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
+            captured = _call_and_capture(
+                "orderbook",
+                chain="evm",
+                network="mainnet",
+                solver_id="s-123",  # should be ignored
+            )
+    assert captured["base_url"] == "http://primary.loki"
+    assert 'service_name="/orderbook-mainnet"' in captured["logql"]
+    assert "solver_id" not in captured["logql"]

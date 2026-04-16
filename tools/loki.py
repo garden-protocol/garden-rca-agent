@@ -265,6 +265,14 @@ def search_by_service(
             logql += f' |= `{level_filter}`'
         return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
 
+    # ── Shared primary-Loki services (orderbook, contains quote logs) ─────
+    if service in _PRIMARY_SHARED_SERVICES:
+        svc_name = _PRIMARY_SHARED_SERVICES[service]
+        logql = f'{{service_name="{svc_name}"}}'
+        if level_filter:
+            logql += f' |= `{level_filter}`'
+        return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
+
     if service == "executor":
         # Route to solver Loki — use solver_id + service_name when available
         svc_name = _SOLVER_SERVICE_MAP.get(chain)
