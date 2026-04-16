@@ -106,7 +106,7 @@ def _build_rca_embed(data: dict) -> discord.Embed:
     colour = _SEVERITY_COLOUR.get(severity, discord.Colour.light_grey())
 
     embed = discord.Embed(
-        title=f"RCA — {state}  |  {severity.upper()} / {confidence} confidence",
+        title=f"RCA — {state}  |  severity: {severity.upper()}  ·  confidence: {confidence.upper()}",
         description=_truncate(root_cause, 2000),
         colour=colour,
     )
