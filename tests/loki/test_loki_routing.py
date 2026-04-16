@@ -176,3 +176,53 @@ def test_search_by_service_uses_regex_filter_for_level():
             )
     assert "|~" in captured["logql"]
     assert "|= `error`" not in captured["logql"]
+
+
+# ── RE2 compatibility ────────────────────────────────────────────────────────
+
+def test_level_filter_regex_has_no_lookarounds():
+    """Loki uses RE2, which doesn't support lookarounds. Emitted regex must be RE2-safe."""
+    frag = _level_filter_logql("error")
+    for forbidden in ("(?=", "(?!", "(?<=", "(?<!"):
+        assert forbidden not in frag, (
+            f"RE2-incompatible lookaround {forbidden!r} in emitted regex: {frag!r}"
+        )
+
+
+# ── Fallback substring match preserved ───────────────────────────────────────
+
+def test_fallback_service_uses_substring_not_level_regex():
+    """
+    When (service, chain) has no entry in _PRIMARY_SERVICE_MAP, the fallback
+    must use a substring filter on `<chain>-<service>` (e.g. `xrpl-watcher`),
+    NOT a level regex.
+    """
+    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
+        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
+            captured = _call_and_capture(
+                "watcher",
+                chain="xrpl",       # not in _PRIMARY_SERVICE_MAP
+                network="mainnet",
+            )
+    assert captured["base_url"] == "http://primary.loki"
+    assert "|= `xrpl-watcher`" in captured["logql"]
+    # Must not emit the level-regex pattern for the service name
+    assert "level" not in captured["logql"].lower() or "level_filter" in captured["logql"]
+    assert "(?i)" not in captured["logql"]
+
+
+def test_fallback_with_level_filter_applies_both():
+    """
+    Fallback path + explicit level_filter → substring for service, regex for level.
+    """
+    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
+        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
+            captured = _call_and_capture(
+                "watcher",
+                chain="xrpl",
+                network="mainnet",
+                level_filter="error",
+            )
+    assert "|= `xrpl-watcher`" in captured["logql"]
+    assert "|~" in captured["logql"]          # level regex applied
+    assert "(?i)" in captured["logql"]
