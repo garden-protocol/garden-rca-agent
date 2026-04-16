@@ -234,7 +234,10 @@ def run(alert: Alert) -> dict:
     return {
         "summary": summary,
         "key_evidence": key_evidence,
-        "raw_lines": all_log_lines[:500],  # kept for debugging, not shown to user
+        "raw_lines": all_log_lines[:500],
+        "window_start": window_start,
+        "window_end": window_end,
+        "solver_id": solver_id,
         "usage": {
             "model": model,
             "input_tokens": total_input,
