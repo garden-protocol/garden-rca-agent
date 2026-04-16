@@ -262,11 +262,27 @@ class BaseSpecialist(ABC):
             f'  "root_cause": "1-2 sentences in plain English: what failed and why (cite code references; no invented jargon)",\n'
             f'  "affected_components": ["service/file:function or module"],\n'
             f'  "investigation_summary": "What you checked → what you found. 3-5 bullet points.",\n'
+            f'  "timeline": [\n'
+            f'    {{"timestamp": "2026-04-10T12:00:00Z", "event": "User initiated on source", "source": "logs"}}\n'
+            f'  ],\n'
+            f'  "hypotheses_ruled_out": ["Not a liquidity issue — solver had sufficient inventory"],\n'
+            f'  "next_action": "One imperative step the on-call should take RIGHT NOW (distinct from the remediation_actions list).",\n'
             f'  "remediation_actions": ["Only human-actionable steps: restart X, fund Y, update Z"],\n'
             f'  "severity": "critical|high|medium|low",\n'
             f'  "confidence": "high|medium|low"\n'
             f'}}\n'
             f"```\n\n"
+            f"## Timeline and Ruled-Out Rules\n\n"
+            f"- `timeline` must have 3-8 events in chronological order with ISO8601 timestamps\n"
+            f"  when known, or relative anchors like \"t+0s\", \"t+30s\" when only a log line lag is\n"
+            f"  available. Each event's `source` is \"logs\" | \"onchain\" | \"alert\" | \"orderbook\".\n"
+            f"- `hypotheses_ruled_out` lists things you actively verified were NOT the cause.\n"
+            f"  0 to 5 entries, each one sentence. Empty is fine if you didn't rule anything\n"
+            f"  out.\n"
+            f"- `next_action` is ONE sentence, imperative, distinct from remediation_actions.\n"
+            f"  Pick the single highest-leverage step (e.g. \"Restart evm-executor pod to flush\n"
+            f"  the stuck nonce\" — not \"Investigate the nonce pool\"). If nothing needs to be\n"
+            f"  done right now, set it to \"Wait for next timelock expiry; no action required.\"\n\n"
             f"## Remediation Actions Rules\n\n"
             f"Valid remediation actions (things ONLY a human operator can do):\n"
             f"- Restart a service to clear in-memory cache / reset state\n"
@@ -374,10 +390,38 @@ class BaseSpecialist(ABC):
         if isinstance(investigation_summary, list):
             investigation_summary = "\n".join(f"- {item}" for item in investigation_summary)
 
+        # New fields (may be missing from older LLM outputs — default to empty)
+        timeline_raw = structured.get("timeline", [])
+        if not isinstance(timeline_raw, list):
+            timeline_raw = []
+        timeline: list[dict] = []
+        for entry in timeline_raw:
+            if isinstance(entry, dict) and entry.get("event"):
+                timeline.append({
+                    "timestamp": str(entry.get("timestamp", "")),
+                    "event":     str(entry.get("event", "")),
+                    "source":    str(entry.get("source", "")),
+                })
+            elif isinstance(entry, str) and entry:
+                timeline.append({"timestamp": "", "event": entry, "source": ""})
+
+        hypotheses = structured.get("hypotheses_ruled_out", [])
+        if not isinstance(hypotheses, list):
+            hypotheses = []
+        hypotheses = [str(h) for h in hypotheses if h]
+
+        next_action = structured.get("next_action", "")
+        if isinstance(next_action, list):
+            next_action = " ".join(str(x) for x in next_action)
+        next_action = str(next_action)
+
         return {
             "root_cause": root_cause,
             "affected_components": structured.get("affected_components", []),
             "investigation_summary": investigation_summary,
+            "timeline": timeline,
+            "hypotheses_ruled_out": hypotheses,
+            "next_action": next_action,
             "remediation_actions": structured.get("remediation_actions", []),
             "severity": structured.get("severity", "medium"),
             "confidence": structured.get("confidence", "low"),
