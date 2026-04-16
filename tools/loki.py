@@ -151,6 +151,20 @@ _SOLVER_SERVICE_MAP: dict[str, str] = {
     "xrpl":     "xrpl-executor",
 }
 
+# Services on solver Loki that are NOT chain-scoped. Filtered by solver_id
+# when one is provided. `chain` and `network` args are accepted for API
+# symmetry but ignored for these services.
+_SOLVER_SHARED_SERVICES: dict[str, str] = {
+    "solver-engine": "solver-engine",
+    "solver-comms":  "solver-comms",
+}
+
+# Services on primary Loki that are NOT chain-scoped. `chain`, `network`,
+# and `solver_id` args are ignored for these services.
+_PRIMARY_SHARED_SERVICES: dict[str, str] = {
+    "orderbook": "/orderbook-mainnet",  # also contains quote service logs
+}
+
 
 # ── High-level search functions ───────────────────────────────────────────────
 
