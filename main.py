@@ -8,11 +8,13 @@ Endpoints:
   GET  /health                      — health check
 """
 import asyncio
+import json as _json
 import time
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 
 from config import settings
 from models.investigate import InvestigateRequest, InvestigateResponse
@@ -120,10 +122,17 @@ async def get_job(server_secret: str, job_id: str):
         payload["result"] = job.result.model_dump(mode="json")
     elif job.status == JobStatus.FAILED:
         payload["error"] = job.error
-    return payload
+
+    # Force stdlib json so control chars in strings (e.g. newlines inside
+    # RCA raw_analysis) are always escaped as \\n. Some deployments pull in
+    # a non-stdlib JSON encoder (orjson / ujson) via transitive deps that
+    # leave raw 0x0a bytes inside string values — invalid per RFC 8259 and
+    # rejected by strict clients (httpx.Response.json(), stdlib json.loads).
+    body = _json.dumps(payload, ensure_ascii=False, default=str)
+    return Response(content=body, media_type="application/json")
 
 
-@app.post("/explore/{server_secret}", response_model=ExploreResponse)
+@app.post("/explore/{server_secret}")
 async def explore_codebase(server_secret: str, req: ExploreRequest):
     """
     Codebase Q&A endpoint (auth required via path secret).
@@ -167,7 +176,9 @@ async def explore_codebase(server_secret: str, req: ExploreRequest):
             duration,
             ai_cost.cost_usd if ai_cost else 0.0,
         )
-        return response
+        # Force stdlib JSON encoding (see /jobs handler for the full reason).
+        body = _json.dumps(response.model_dump(mode="json"), ensure_ascii=False, default=str)
+        return Response(content=body, media_type="application/json")
     except Exception as exc:
         logger.exception("Explore failed for question: %s", req.question[:120])
         raise HTTPException(status_code=500, detail=str(exc))
