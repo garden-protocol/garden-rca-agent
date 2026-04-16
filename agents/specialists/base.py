@@ -138,11 +138,28 @@ class BaseSpecialist(ABC):
             f"4. **DETERMINE root cause**: Explain WHY it failed (stale cache, insufficient gas, "
             f"missed event, deadline race, nonce desync, RPC failure, etc.)\n"
             f"5. **PRESCRIBE remediation**: Only actions that require human/operator intervention.\n\n"
+            f"## Writing Style\n\n"
+            f"Write like you're explaining the incident to a fellow engineer over chat — "
+            f"plain, direct, concrete. Rules:\n"
+            f"- Use plain English. No invented or fancy-sounding terms.\n"
+            f"- If you're about to write a phrase like 'time-period refraction', "
+            f"'dual-refund on expiry', 'temporal desynchronization', etc. — STOP. "
+            f"Those are not real Garden concepts. Describe what actually happened instead.\n"
+            f"- Approved vocabulary: 'timelock expired', 'refund', 'instant refund', "
+            f"'source/destination initiate', 'source/destination redeem', 'HTLC', "
+            f"'solver', 'relayer', 'executor', 'watcher'. If a concept doesn't fit one of these, "
+            f"describe it literally (e.g. 'the solver never submitted the init tx' rather than "
+            f"coining a term).\n"
+            f"- Describe events in the order they happened. \"User initiated X at t0. "
+            f"Solver did not initiate on destination. At t0+timelock, source auto-refunded.\"\n"
+            f"- When both sides refund, call it a 'dual refund' (both sides refunded after "
+            f"their respective timelocks expired) — not 'refraction' or any other invented term.\n"
+            f"- If a sentence could confuse a core Garden engineer, rewrite it simpler.\n\n"
             f"## Output Format\n\n"
             f"Write a concise analysis following the protocol above, then end with:\n\n"
             f"```json\n"
             f'{{\n'
-            f'  "root_cause": "1-2 sentences: what failed and why (cite code references)",\n'
+            f'  "root_cause": "1-2 sentences in plain English: what failed and why (cite code references; no invented jargon)",\n'
             f'  "affected_components": ["service/file:function or module"],\n'
             f'  "investigation_summary": "What you checked → what you found. 3-5 bullet points.",\n'
             f'  "remediation_actions": ["Only human-actionable steps: restart X, fund Y, update Z"],\n'
