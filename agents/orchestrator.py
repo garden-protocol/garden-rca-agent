@@ -605,6 +605,10 @@ def run(alert: Alert) -> tuple[RCAReport, AICost]:
             alert=alert,
             log_summary=log_result["summary"],
             onchain_findings=onchain_result,
+            log_window_start=log_result.get("window_start"),
+            log_window_end=log_result.get("window_end"),
+            solver_id=log_result.get("solver_id", ""),
+            onchain_agent=onchain_agent,
         )
     except Exception as exc:
         specialist_result["root_cause"] = f"[Specialist failed: {exc}]"

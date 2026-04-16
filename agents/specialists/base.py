@@ -3,6 +3,8 @@ Base class for chain specialist agents.
 Each specialist knows the architecture of a specific chain's executor/watcher/relayer,
 reads the relevant source code, and synthesizes root cause from logs + on-chain data.
 """
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from tools.gitea import (
     build_gitea_tool_definitions,
     execute_gitea_tool,
 )
+from tools.loki import LOKI_TOOL_DEFINITIONS, LOKI_TOOL_NAMES, execute_loki_tool
 from providers import get_provider
 
 
@@ -82,6 +85,10 @@ class BaseSpecialist(ABC):
         alert: Alert,
         log_summary: str,
         onchain_findings: dict | None = None,
+        log_window_start: str | None = None,
+        log_window_end: str | None = None,
+        solver_id: str = "",
+        onchain_agent: "BaseOnChainAgent | None" = None,
     ) -> dict:
         """
         Analyze the alert using log data and optional on-chain findings.
@@ -116,6 +123,98 @@ class BaseSpecialist(ABC):
                 f"{onchain_findings.get('findings', '[none]')}\n"
             )
 
+        provider = get_provider()
+        model = _settings.get_specialist_model()
+        chain = self.chain  # capture for closure in tool execution
+        total_input = total_output = total_cache_read = total_cache_write = 0
+
+        def _accumulate(resp) -> None:
+            nonlocal total_input, total_output, total_cache_read, total_cache_write
+            u = resp.usage
+            total_input       += u.input_tokens
+            total_output      += u.output_tokens
+            total_cache_read  += u.cache_read_tokens
+            total_cache_write += u.cache_creation_tokens
+
+        # Determine tool source: local filesystem > Gitea API > knowledge-only
+        from config import settings as _cfg
+        import os as _os
+        repos_on_disk = any(
+            _os.path.isdir(p) for p in _cfg.repo_paths(chain).values()
+        )
+
+        if repos_on_disk:
+            repo_tool_defs = build_repo_tool_definitions(chain)
+            repo_executor = lambda name, inp: execute_repo_tool(chain, name, inp)
+            max_turns = 35
+        elif gitea_configured():
+            repo_tool_defs = build_gitea_tool_definitions(chain)
+            repo_executor = lambda name, inp: execute_gitea_tool(chain, name, inp)
+            max_turns = 20
+        else:
+            repo_tool_defs = []
+            repo_executor = None
+            max_turns = 0
+
+        # Loki tools: included only when window is provided
+        loki_enabled = bool(log_window_start and log_window_end)
+        loki_tool_defs = list(LOKI_TOOL_DEFINITIONS) if loki_enabled else []
+
+        # On-chain tools: included only when an agent is provided
+        onchain_tool_defs = list(onchain_agent.tool_definitions) if onchain_agent else []
+        onchain_tool_names = {t["name"] for t in onchain_tool_defs}
+
+        tool_defs = (repo_tool_defs or []) + loki_tool_defs + onchain_tool_defs
+        if not tool_defs:
+            tool_defs = None
+
+        def tool_executor(name, inp):
+            if name in LOKI_TOOL_NAMES:
+                return execute_loki_tool(name, inp)
+            if name in onchain_tool_names and onchain_agent is not None:
+                return onchain_agent.execute_tool(name, inp)
+            if repo_executor is not None:
+                return repo_executor(name, inp)
+            return f"[no executor available for tool: {name}]"
+
+        if max_turns == 0 and tool_defs:
+            max_turns = 15
+
+        # Build tool-hints section for the user message
+        tool_hint_lines: list[str] = []
+        if repo_tool_defs:
+            if repos_on_disk:
+                tool_hint_lines.append(
+                    "**Repo tools** (`read_file`, `grep_repo`, `list_directory`) — inspect source code."
+                )
+            else:  # Gitea
+                tool_hint_lines.append(
+                    "**Repo tools** (`read_file`, `grep_repo`, `list_directory`) — inspect source code via Gitea."
+                )
+        if loki_enabled:
+            solver_line = (
+                f" For `executor` / `solver-engine` / `solver-comms` services, pass solver_id=\"{solver_id}\"."
+                if solver_id else ""
+            )
+            tool_hint_lines.append(
+                f"**Log tools** (`search_by_order_id`, `search_by_service`, `query_loki`) — targeted "
+                f"follow-up Loki queries. "
+                f"Always pass start_iso=\"{log_window_start}\" and end_iso=\"{log_window_end}\" on these calls."
+                f"{solver_line} "
+                f"Do NOT re-run bulk retrieval — the first-pass summary is already in your context."
+            )
+        if onchain_agent is not None:
+            onchain_tool_list = ", ".join(f"`{t['name']}`" for t in onchain_tool_defs)
+            tool_hint_lines.append(
+                f"**On-chain tools** ({onchain_tool_list}) — verify live chain state directly. "
+                f"Use when a hypothesis depends on a fact not already confirmed in the first-pass findings."
+            )
+        numbered = [f"{i + 1}. {line}" for i, line in enumerate(tool_hint_lines)]
+        tool_hint_block = (
+            "## Tools Available\n\n" + "\n\n".join(numbered) + "\n\n"
+            if numbered else ""
+        )
+
         user_message = (
             f"## Alert\n\n{alert_block}\n\n"
             f"## Log Intelligence Report\n\n{log_summary}"
@@ -127,6 +226,7 @@ class BaseSpecialist(ABC):
             f"YOUR job is to investigate, trace code paths, and explain what happened. "
             f"**Never tell the operator to inspect code, check logs, or verify on-chain state — "
             f"that is YOUR job and you have already done it (or can do it now with your tools).**\n\n"
+            f"{tool_hint_block}"
             f"## Investigation Protocol\n\n"
             f"1. **TRACE the code path**: Using the knowledge base and source code tools, identify "
             f"what code executes for this order's state and alert type. For '{alert.alert_type}' alerts, "
@@ -189,39 +289,7 @@ class BaseSpecialist(ABC):
             f"root_cause must be 1-2 sentences max."
         )
 
-        provider = get_provider()
-        model = _settings.get_specialist_model()
         messages = [{"role": "user", "content": user_message}]
-        chain = self.chain  # capture for closure in tool execution
-        total_input = total_output = total_cache_read = total_cache_write = 0
-
-        def _accumulate(resp) -> None:
-            nonlocal total_input, total_output, total_cache_read, total_cache_write
-            u = resp.usage
-            total_input       += u.input_tokens
-            total_output      += u.output_tokens
-            total_cache_read  += u.cache_read_tokens
-            total_cache_write += u.cache_creation_tokens
-
-        # Determine tool source: local filesystem > Gitea API > knowledge-only
-        from config import settings as _cfg
-        import os as _os
-        repos_on_disk = any(
-            _os.path.isdir(p) for p in _cfg.repo_paths(chain).values()
-        )
-
-        if repos_on_disk:
-            tool_defs = build_repo_tool_definitions(chain)
-            tool_executor = lambda name, inp: execute_repo_tool(chain, name, inp)
-            max_turns = 25
-        elif gitea_configured():
-            tool_defs = build_gitea_tool_definitions(chain)
-            tool_executor = lambda name, inp: execute_gitea_tool(chain, name, inp)
-            max_turns = 15  # fewer turns for API-based tools (slower per call)
-        else:
-            tool_defs = None
-            tool_executor = None
-            max_turns = 0
 
         if tool_defs:
             # Agentic loop with code tools (filesystem or Gitea)

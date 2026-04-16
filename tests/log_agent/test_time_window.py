@@ -121,3 +121,30 @@ def test_window_falls_back_to_4h_when_no_deadline():
         msg = _run_capturing_user_message(_make_alert(created, None))
 
     assert "2026-04-10T16:00:00" in msg  # created + 4h
+
+
+def test_run_returns_window_and_solver_id():
+    """log_agent.run() return dict must expose window_start, window_end, solver_id."""
+    created = datetime(2026, 4, 10, 12, 0, 0, tzinfo=timezone.utc)
+    deadline = int((created + timedelta(hours=2)).timestamp())
+    alert = _make_alert(created, deadline)
+    alert = alert.model_copy(update={"metadata": {**alert.metadata, "solver_id": "s-xyz"}})
+
+    fake_response = MagicMock()
+    fake_response.usage = MagicMock(
+        input_tokens=0, output_tokens=0,
+        cache_read_tokens=0, cache_creation_tokens=0,
+    )
+    fake_response.stop_reason = "end_turn"
+    fake_response.tool_calls = []
+    fake_response.text = "stubbed"
+
+    fake_provider = MagicMock()
+    fake_provider.create_message.return_value = fake_response
+
+    with patch.object(log_agent, "get_provider", return_value=fake_provider):
+        result = log_agent.run(alert)
+
+    assert result["window_start"] == "2026-04-10T11:55:00+00:00"
+    assert isinstance(result["window_end"], str) and result["window_end"]
+    assert result["solver_id"] == "s-xyz"
