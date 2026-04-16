@@ -318,9 +318,7 @@ def search_by_service(
         if container:
             logql = f'{{service_name="{container}"}}'
         else:
-            logql = f'{{job="MAINNET_LOGS"}}'
-            if not level_filter:
-                level_filter = f"{chain}-{service}"
+            logql = f'{{job="MAINNET_LOGS"}} |= `{chain}-{service}`'
         if level_filter:
             logql += _level_filter_logql(level_filter)
         return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
