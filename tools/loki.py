@@ -75,11 +75,14 @@ def _level_filter_logql(level: str) -> str:
       [ERROR], ERROR:               (plain-text)
     Does NOT match substrings like "no error" or "error_count=0".
     Case-insensitive.
+
+    RE2-compatible; no lookarounds. The plain-text prefix case is matched by
+    consuming the trailing colon (e.g. `ERROR:`) rather than using a lookahead.
     """
     regex = (
         f'(?i)(?:"?level"?\\s*[:=]\\s*"?{level}\\b'
         f'|\\[{level}\\]'
-        f'|\\b{level}\\b(?=:))'
+        f'|\\b{level}:)'
     )
     return f' |~ `{regex}`'
 
