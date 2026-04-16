@@ -20,9 +20,17 @@ import agents.log_agent as log_agent
 from agents.specialists.bitcoin import BitcoinSpecialist
 from agents.specialists.evm import EVMSpecialist
 from agents.specialists.solana import SolanaSpecialist
+from agents.specialists.tron import TronSpecialist
+from agents.specialists.starknet import StarknetSpecialist
+from agents.specialists.litecoin import LitecoinSpecialist
+from agents.specialists.alpen import AlpenSpecialist
 from agents.onchain.bitcoin import BitcoinOnChainAgent
 from agents.onchain.evm import EVMOnChainAgent
 from agents.onchain.solana import SolanaOnChainAgent
+from agents.onchain.tron import TronOnChainAgent
+from agents.onchain.starknet import StarknetOnChainAgent
+from agents.onchain.litecoin import LitecoinOnChainAgent
+from agents.onchain.alpen import AlpenOnChainAgent
 from tools.orders_api import (
     fetch_order,
     parse_order_id,
@@ -41,12 +49,20 @@ _SPECIALISTS = {
     "bitcoin": BitcoinSpecialist(),
     "evm": EVMSpecialist(),
     "solana": SolanaSpecialist(),
+    "tron": TronSpecialist(),
+    "starknet": StarknetSpecialist(),
+    "litecoin": LitecoinSpecialist(),
+    "alpen": AlpenSpecialist(),
 }
 
 _ONCHAIN_AGENTS = {
     "bitcoin": BitcoinOnChainAgent(),
     "evm": EVMOnChainAgent(),
     "solana": SolanaOnChainAgent(),
+    "tron": TronOnChainAgent(),
+    "starknet": StarknetOnChainAgent(),
+    "litecoin": LitecoinOnChainAgent(),
+    "alpen": AlpenOnChainAgent(),
 }
 
 
