@@ -64,6 +64,29 @@ def _to_ns(dt: datetime) -> str:
     return str(int(dt.timestamp() * 1e9))
 
 
+def _level_filter_logql(level: str) -> str:
+    """
+    Build a LogQL filter fragment that matches real level tokens across
+    common log formats (JSON, logfmt, bracketed, bare prefix).
+
+    Matches:
+      "level":"error"         (JSON)
+      level=error / level = error   (logfmt)
+      [ERROR], ERROR:               (plain-text)
+    Does NOT match substrings like "no error" or "error_count=0".
+    Case-insensitive.
+
+    RE2-compatible; no lookarounds. The plain-text prefix case is matched by
+    consuming the trailing colon (e.g. `ERROR:`) rather than using a lookahead.
+    """
+    regex = (
+        f'(?i)(?:"?level"?\\s*[:=]\\s*"?{level}\\b'
+        f'|\\[{level}\\]'
+        f'|\\b{level}:)'
+    )
+    return f' |~ `{regex}`'
+
+
 def _query(base_url: str, headers: dict, logql: str, start: datetime, end: datetime, limit: int) -> list[str]:
     """Low-level LogQL query against a Loki instance."""
     url = f"{base_url}/loki/api/v1/query_range"
@@ -151,6 +174,20 @@ _SOLVER_SERVICE_MAP: dict[str, str] = {
     "xrpl":     "xrpl-executor",
 }
 
+# Services on solver Loki that are NOT chain-scoped. Filtered by solver_id
+# when one is provided. `chain` and `network` args are accepted for API
+# symmetry but ignored for these services.
+_SOLVER_SHARED_SERVICES: dict[str, str] = {
+    "solver-engine": "solver-engine",
+    "solver-comms":  "solver-comms",
+}
+
+# Services on primary Loki that are NOT chain-scoped. `chain`, `network`,
+# and `solver_id` args are ignored for these services.
+_PRIMARY_SHARED_SERVICES: dict[str, str] = {
+    "orderbook": "/orderbook-mainnet",  # also contains quote service logs
+}
+
 
 # ── High-level search functions ───────────────────────────────────────────────
 
@@ -217,16 +254,33 @@ def search_by_service(
 ) -> list[str]:
     """
     Search logs for a specific service/chain/network combination.
-    Routes executor queries to solver Loki; all others to primary Loki.
+
+    Four routing branches, evaluated in order:
+      1. Solver-shared services (solver-engine, solver-comms): routed to solver
+         Loki, filtered by service_name and optionally solver_id. Chain/network
+         args are accepted for API symmetry but ignored.
+      2. Primary-shared services (orderbook): routed to primary Loki, filtered
+         by service_name. Chain, network, and solver_id args are ignored.
+      3. executor: routed to solver Loki using _SOLVER_SERVICE_MAP for
+         service_name; optionally narrowed by solver_id.
+      4. Fallback (watcher, relayer, and any other chain-scoped service):
+         routed to primary Loki. If the (service, chain) pair is in
+         _PRIMARY_SERVICE_MAP, the mapped container label is used directly.
+         Otherwise a job-wide selector with a substring filter on
+         `<chain>-<service>` is emitted. level_filter is applied (as a
+         regex) on top of whichever selector was chosen.
 
     Args:
-        service: Service name (executor, watcher, relayer)
-        chain: Chain name (bitcoin, evm, solana, tron, starknet, ...)
+        service: Service name — chain-scoped: executor, watcher, relayer;
+                 shared (chain ignored): solver-engine, solver-comms, orderbook
+        chain: Chain name (bitcoin, evm, solana, tron, starknet, spark,
+               litecoin, alpen, xrpl, ...)
         network: Network (mainnet, testnet)
         start_iso: Explicit start time in ISO 8601 format (overrides minutes_back)
         end_iso: Explicit end time in ISO 8601 format (overrides minutes_back)
         minutes_back: Fallback if start_iso/end_iso not provided
-        level_filter: Optional log level filter, e.g. 'error' or 'warn'
+        level_filter: Optional log level filter, e.g. 'error' or 'warn'.
+                      Emits a RE2-compatible regex via _level_filter_logql.
         solver_id: Optional solver ID from order response — narrows solver Loki query
 
     Returns:
@@ -239,6 +293,25 @@ def search_by_service(
     else:
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes_back)
+
+    # ── Shared solver-Loki services (solver-engine, solver-comms) ────────
+    if service in _SOLVER_SHARED_SERVICES:
+        svc_name = _SOLVER_SHARED_SERVICES[service]
+        labels: list[str] = [f'service_name="{svc_name}"']
+        if solver_id:
+            labels.append(f'solver_id="{solver_id}"')
+        logql = "{" + ", ".join(labels) + "}"
+        if level_filter:
+            logql += _level_filter_logql(level_filter)
+        return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
+
+    # ── Shared primary-Loki services (orderbook, contains quote logs) ─────
+    if service in _PRIMARY_SHARED_SERVICES:
+        svc_name = _PRIMARY_SHARED_SERVICES[service]
+        logql = f'{{service_name="{svc_name}"}}'
+        if level_filter:
+            logql += _level_filter_logql(level_filter)
+        return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
 
     if service == "executor":
         # Route to solver Loki — use solver_id + service_name when available
@@ -253,7 +326,7 @@ def search_by_service(
         else:
             logql = f'{{}} |= `{chain}-executor`'
         if level_filter:
-            logql += f' |= `{level_filter}`'
+            logql += _level_filter_logql(level_filter)
         return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
 
     else:
@@ -262,11 +335,9 @@ def search_by_service(
         if container:
             logql = f'{{service_name="{container}"}}'
         else:
-            logql = f'{{job="MAINNET_LOGS"}}'
-            if not level_filter:
-                level_filter = f"{chain}-{service}"
+            logql = f'{{job="MAINNET_LOGS"}} |= `{chain}-{service}`'
         if level_filter:
-            logql += f' |= `{level_filter}`'
+            logql += _level_filter_logql(level_filter)
         return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
 
 
@@ -354,8 +425,17 @@ LOKI_TOOL_DEFINITIONS = [
             "properties": {
                 "service": {
                     "type": "string",
-                    "enum": ["executor", "watcher", "relayer"],
-                    "description": "The service to query logs for",
+                    "enum": [
+                        "executor", "watcher", "relayer",
+                        "solver-engine", "solver-comms", "orderbook",
+                    ],
+                    "description": (
+                        "Service to query logs for. "
+                        "Chain-scoped: executor, watcher, relayer (require matching chain/network). "
+                        "Shared (chain arg ignored): solver-engine + solver-comms on solver Loki "
+                        "(filtered by solver_id when provided); orderbook on primary Loki "
+                        "(contains quote service logs)."
+                    ),
                 },
                 "chain": {
                     "type": "string",
@@ -382,7 +462,12 @@ LOKI_TOOL_DEFINITIONS = [
                 },
                 "level_filter": {
                     "type": "string",
-                    "description": "Optional log level keyword to filter by, e.g. 'error' or 'warn'",
+                    "description": (
+                        "Log level to filter on: 'error', 'warn', 'info', 'debug'. "
+                        "Matches JSON ('level':'error'), logfmt (level=error), and bracketed ([ERROR]) "
+                        "tokens. Case-insensitive. For freeform keyword filtering use `query_loki` "
+                        "with a full LogQL query instead."
+                    ),
                     "default": "",
                 },
                 "solver_id": {
