@@ -64,6 +64,26 @@ def _to_ns(dt: datetime) -> str:
     return str(int(dt.timestamp() * 1e9))
 
 
+def _level_filter_logql(level: str) -> str:
+    """
+    Build a LogQL filter fragment that matches real level tokens across
+    common log formats (JSON, logfmt, bracketed, bare prefix).
+
+    Matches:
+      "level":"error"         (JSON)
+      level=error / level = error   (logfmt)
+      [ERROR], ERROR:               (plain-text)
+    Does NOT match substrings like "no error" or "error_count=0".
+    Case-insensitive.
+    """
+    regex = (
+        f'(?i)(?:"?level"?\\s*[:=]\\s*"?{level}\\b'
+        f'|\\[{level}\\]'
+        f'|\\b{level}\\b(?=:))'
+    )
+    return f' |~ `{regex}`'
+
+
 def _query(base_url: str, headers: dict, logql: str, start: datetime, end: datetime, limit: int) -> list[str]:
     """Low-level LogQL query against a Loki instance."""
     url = f"{base_url}/loki/api/v1/query_range"
@@ -262,7 +282,7 @@ def search_by_service(
             labels.append(f'solver_id="{solver_id}"')
         logql = "{" + ", ".join(labels) + "}"
         if level_filter:
-            logql += f' |= `{level_filter}`'
+            logql += _level_filter_logql(level_filter)
         return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
 
     # ── Shared primary-Loki services (orderbook, contains quote logs) ─────
@@ -270,7 +290,7 @@ def search_by_service(
         svc_name = _PRIMARY_SHARED_SERVICES[service]
         logql = f'{{service_name="{svc_name}"}}'
         if level_filter:
-            logql += f' |= `{level_filter}`'
+            logql += _level_filter_logql(level_filter)
         return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
 
     if service == "executor":
@@ -286,7 +306,7 @@ def search_by_service(
         else:
             logql = f'{{}} |= `{chain}-executor`'
         if level_filter:
-            logql += f' |= `{level_filter}`'
+            logql += _level_filter_logql(level_filter)
         return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
 
     else:
@@ -299,7 +319,7 @@ def search_by_service(
             if not level_filter:
                 level_filter = f"{chain}-{service}"
         if level_filter:
-            logql += f' |= `{level_filter}`'
+            logql += _level_filter_logql(level_filter)
         return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
 
 

@@ -111,3 +111,68 @@ def test_orderbook_routes_to_primary_loki():
     assert captured["base_url"] == "http://primary.loki"
     assert 'service_name="/orderbook-mainnet"' in captured["logql"]
     assert "solver_id" not in captured["logql"]
+
+
+# ── Level filter regex ───────────────────────────────────────────────────────
+
+from tools.loki import _level_filter_logql  # introduced in this task
+
+
+def test_level_filter_produces_regex_filter():
+    """level_filter should emit |~ (regex) LogQL, not |= (substring)."""
+    frag = _level_filter_logql("error")
+    assert frag.strip().startswith("|~"), f"expected regex filter, got: {frag!r}"
+    assert "error" in frag
+
+
+def test_level_filter_matches_json_logs():
+    """Simulate the regex fragment against sample JSON log lines."""
+    import re
+    frag = _level_filter_logql("error")
+    pattern = frag.split("`")[1]  # extract the regex between backticks
+    compiled = re.compile(pattern)
+    assert compiled.search('{"level":"error","msg":"oops"}')
+    assert compiled.search('{"msg":"oops","level":"ERROR"}')  # case-insensitive
+
+
+def test_level_filter_matches_logfmt():
+    import re
+    frag = _level_filter_logql("warn")
+    pattern = frag.split("`")[1]
+    compiled = re.compile(pattern)
+    assert compiled.search("ts=2026-04-10 level=warn msg=backoff")
+    assert compiled.search("level = warn msg=...")
+
+
+def test_level_filter_matches_bracketed_level():
+    import re
+    frag = _level_filter_logql("error")
+    pattern = frag.split("`")[1]
+    compiled = re.compile(pattern)
+    assert compiled.search("2026-04-10 [ERROR] connection refused")
+    assert compiled.search("ERROR: something failed")
+
+
+def test_level_filter_does_not_match_substring_error():
+    """The whole point: substring 'error' inside words must NOT match."""
+    import re
+    frag = _level_filter_logql("error")
+    pattern = frag.split("`")[1]
+    compiled = re.compile(pattern)
+    assert not compiled.search("no error occurred today")
+    assert not compiled.search("error_count=0 completed ok")
+    assert not compiled.search("had an error-free run")
+
+
+def test_search_by_service_uses_regex_filter_for_level():
+    """Integration: search_by_service with level_filter emits |~ in LogQL."""
+    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
+        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
+            captured = _call_and_capture(
+                "watcher",
+                chain="evm",
+                network="mainnet",
+                level_filter="error",
+            )
+    assert "|~" in captured["logql"]
+    assert "|= `error`" not in captured["logql"]
