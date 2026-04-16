@@ -62,6 +62,7 @@ class AnthropicProvider(LLMProvider):
             stop_reason=stop,
             usage=usage,
             raw_content=resp.content,
+            finish_reason=getattr(resp, "stop_reason", "") or "",
         )
 
     def build_assistant_message(self, response: LLMResponse) -> dict:

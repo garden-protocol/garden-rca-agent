@@ -205,3 +205,99 @@ def test_tool_hint_block_numbering_has_no_gaps():
     assert "1." in tools_block
     assert "2." in tools_block
     assert "3." not in tools_block
+
+
+# ── Empty-text nudge retry ────────────────────────────────────────────────────
+
+def test_empty_text_end_turn_triggers_nudge_retry():
+    """
+    When the provider returns empty text with no tool_calls (e.g. GPT-4o
+    finishing with finish_reason='stop' and blank content), the specialist
+    should nudge once to get the analysis written.
+    """
+    call_log: list[dict] = []
+    fake_provider = MagicMock()
+
+    responses = [
+        # First call: empty, no tool calls → triggers nudge
+        _make_response(text="", tool_calls=[], finish_reason="stop"),
+        # Second call (the nudge): returns real analysis
+        _make_response(
+            text='Analysis here.\n```json\n{"root_cause": "x", "severity": "low", "confidence": "high"}\n```',
+            tool_calls=[],
+            finish_reason="stop",
+        ),
+    ]
+    idx = {"i": 0}
+
+    def create(**kw):
+        call_log.append({"messages_tail": kw["messages"][-1].get("content", "")[:80]})
+        r = responses[idx["i"]]
+        idx["i"] += 1
+        return r
+
+    fake_provider.create_message.side_effect = create
+    fake_provider.build_assistant_message.return_value = {"role": "assistant", "content": ""}
+    fake_provider.build_tool_results_message.return_value = {"role": "user", "content": ""}
+
+    with patch("agents.specialists.base.get_provider", return_value=fake_provider):
+        with patch("agents.specialists.base.gitea_configured", return_value=False):
+            with patch("os.path.isdir", return_value=False):
+                result = EVMSpecialist().analyze(
+                    alert=_alert(),
+                    log_summary="summary",
+                    onchain_findings={"findings": "ok"},
+                )
+
+    assert idx["i"] == 2, f"expected exactly 2 provider calls (initial + nudge), got {idx['i']}"
+    # Second call's messages tail should be the nudge prompt
+    assert "stopped without writing an analysis" in call_log[1]["messages_tail"] or \
+        "write your complete root cause analysis now" in call_log[1]["messages_tail"], (
+        f"nudge prompt not present in second call; got: {call_log[1]}"
+    )
+    assert result["root_cause"] == "x"
+
+
+def test_non_empty_text_does_not_trigger_nudge():
+    """When the first response has real text, no nudge should fire."""
+    responses = [
+        _make_response(
+            text='```json\n{"root_cause": "ok", "severity": "low", "confidence": "high"}\n```',
+            tool_calls=[],
+            finish_reason="stop",
+        ),
+    ]
+    idx = {"i": 0}
+    fake_provider = MagicMock()
+
+    def create(**kw):
+        r = responses[idx["i"]] if idx["i"] < len(responses) else _make_response("")
+        idx["i"] += 1
+        return r
+
+    fake_provider.create_message.side_effect = create
+    fake_provider.build_assistant_message.return_value = {"role": "assistant", "content": ""}
+    fake_provider.build_tool_results_message.return_value = {"role": "user", "content": ""}
+
+    with patch("agents.specialists.base.get_provider", return_value=fake_provider):
+        with patch("agents.specialists.base.gitea_configured", return_value=False):
+            with patch("os.path.isdir", return_value=False):
+                result = EVMSpecialist().analyze(
+                    alert=_alert(), log_summary="summary", onchain_findings={"findings": "ok"},
+                )
+
+    assert idx["i"] == 1, f"expected exactly 1 provider call, got {idx['i']}"
+    assert result["root_cause"] == "ok"
+
+
+def _make_response(text: str, tool_calls=None, finish_reason: str = "stop"):
+    r = MagicMock()
+    r.usage = MagicMock(
+        input_tokens=0, output_tokens=0,
+        cache_read_tokens=0, cache_creation_tokens=0,
+    )
+    r.stop_reason = "tool_use" if tool_calls else "end_turn"
+    r.tool_calls = tool_calls or []
+    r.text = text
+    r.finish_reason = finish_reason
+    return r
