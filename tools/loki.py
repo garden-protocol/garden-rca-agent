@@ -481,6 +481,8 @@ LOKI_TOOL_DEFINITIONS = [
     },
 ]
 
+LOKI_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in LOKI_TOOL_DEFINITIONS)
+
 
 def execute_loki_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a Loki tool call and return result as string."""

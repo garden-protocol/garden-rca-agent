@@ -7,8 +7,6 @@ import os
 import sys
 from unittest.mock import patch, MagicMock
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from models.alert import Alert
@@ -127,3 +125,83 @@ def test_specialist_no_name_collision():
     )
     names = [t["name"] for t in tools]
     assert len(names) == len(set(names)), f"tool name collision: {names}"
+
+
+def test_tool_hint_block_omits_repo_line_in_knowledge_only_path(monkeypatch):
+    """
+    In the knowledge-only path (no repos, no Gitea, no window, no onchain), the
+    user message must NOT claim the specialist has repo tools.
+    """
+    captured = {}
+    fake_provider = MagicMock()
+
+    def capture(**kw):
+        for m in kw.get("messages") or []:
+            if m.get("role") == "user":
+                captured["user_message"] = m["content"]
+        return _stub_response()
+
+    fake_provider.create_message.side_effect = capture
+    fake_provider.build_assistant_message.return_value = {"role": "assistant", "content": ""}
+    fake_provider.build_tool_results_message.return_value = {"role": "user", "content": ""}
+
+    with patch("agents.specialists.base.get_provider", return_value=fake_provider):
+        with patch("agents.specialists.base.gitea_configured", return_value=False):
+            with patch("os.path.isdir", return_value=False):
+                EVMSpecialist().analyze(
+                    alert=_alert(),
+                    log_summary="summary",
+                    onchain_findings={"findings": "ok"},
+                )
+
+    user_msg = captured.get("user_message", "")
+    assert "read_file" not in user_msg, (
+        "repo tool names must not appear in user message when no repo tools are available"
+    )
+    # Tools Available section should either be absent or only list available categories.
+    # When nothing is available, there should be no Tools Available block at all.
+    assert "## Tools Available" not in user_msg
+
+
+def test_tool_hint_block_numbering_has_no_gaps():
+    """
+    With loki off, onchain on, and repo on, the rendered hint must read 1. ... 2. ...
+    not 1. ... 3. ... (which is what the hardcoded numbering produced).
+    """
+    captured = {}
+    fake_provider = MagicMock()
+
+    def capture(**kw):
+        for m in kw.get("messages") or []:
+            if m.get("role") == "user":
+                captured["user_message"] = m["content"]
+        return _stub_response()
+
+    fake_provider.create_message.side_effect = capture
+    fake_provider.build_assistant_message.return_value = {"role": "assistant", "content": ""}
+    fake_provider.build_tool_results_message.return_value = {"role": "user", "content": ""}
+
+    agent = EVMOnChainAgent()
+    with patch("agents.specialists.base.get_provider", return_value=fake_provider):
+        with patch("agents.specialists.base.gitea_configured", return_value=False):
+            # Force repo on via isdir=True and intercept build_repo_tool_definitions
+            with patch("os.path.isdir", return_value=True):
+                EVMSpecialist().analyze(
+                    alert=_alert(),
+                    log_summary="summary",
+                    onchain_findings={"findings": "ok"},
+                    onchain_agent=agent,  # loki off, onchain on
+                )
+
+    user_msg = captured.get("user_message", "")
+    # Extract just the Tools Available block to avoid false positives from other numbered lists
+    assert "## Tools Available" in user_msg
+    tools_section_start = user_msg.index("## Tools Available")
+    # Find the next ## heading after Tools Available
+    rest = user_msg[tools_section_start + len("## Tools Available"):]
+    next_section = rest.index("##") if "##" in rest else len(rest)
+    tools_block = rest[:next_section]
+    # Must start at 1 and have no "3." — only two categories (repo + onchain) are enabled
+    assert "1." in tools_block
+    assert "2." in tools_block
+    assert "3." not in tools_block

@@ -3,6 +3,8 @@ Base class for chain specialist agents.
 Each specialist knows the architecture of a specific chain's executor/watcher/relayer,
 reads the relevant source code, and synthesizes root cause from logs + on-chain data.
 """
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -13,7 +15,7 @@ from tools.gitea import (
     build_gitea_tool_definitions,
     execute_gitea_tool,
 )
-from tools.loki import LOKI_TOOL_DEFINITIONS, execute_loki_tool
+from tools.loki import LOKI_TOOL_DEFINITIONS, LOKI_TOOL_NAMES, execute_loki_tool
 from providers import get_provider
 
 
@@ -166,8 +168,6 @@ class BaseSpecialist(ABC):
         if not tool_defs:
             tool_defs = None
 
-        LOKI_TOOL_NAMES = {"query_loki", "search_by_order_id", "search_by_service"}
-
         def tool_executor(name, inp):
             if name in LOKI_TOOL_NAMES:
                 return execute_loki_tool(name, inp)
@@ -182,16 +182,22 @@ class BaseSpecialist(ABC):
 
         # Build tool-hints section for the user message
         tool_hint_lines: list[str] = []
-        tool_hint_lines.append(
-            "1. **Repo tools** (`read_file`, `grep_repo`, `list_directory`) — inspect source code."
-        )
+        if repo_tool_defs:
+            if repos_on_disk:
+                tool_hint_lines.append(
+                    "**Repo tools** (`read_file`, `grep_repo`, `list_directory`) — inspect source code."
+                )
+            else:  # Gitea
+                tool_hint_lines.append(
+                    "**Repo tools** (`read_file`, `grep_repo`, `list_directory`) — inspect source code via Gitea."
+                )
         if loki_enabled:
             solver_line = (
                 f" For `executor` / `solver-engine` / `solver-comms` services, pass solver_id=\"{solver_id}\"."
                 if solver_id else ""
             )
             tool_hint_lines.append(
-                f"2. **Log tools** (`search_by_order_id`, `search_by_service`, `query_loki`) — targeted "
+                f"**Log tools** (`search_by_order_id`, `search_by_service`, `query_loki`) — targeted "
                 f"follow-up Loki queries. "
                 f"Always pass start_iso=\"{log_window_start}\" and end_iso=\"{log_window_end}\" on these calls."
                 f"{solver_line} "
@@ -200,12 +206,13 @@ class BaseSpecialist(ABC):
         if onchain_agent is not None:
             onchain_tool_list = ", ".join(f"`{t['name']}`" for t in onchain_tool_defs)
             tool_hint_lines.append(
-                f"3. **On-chain tools** ({onchain_tool_list}) — verify live chain state directly. "
+                f"**On-chain tools** ({onchain_tool_list}) — verify live chain state directly. "
                 f"Use when a hypothesis depends on a fact not already confirmed in the first-pass findings."
             )
+        numbered = [f"{i + 1}. {line}" for i, line in enumerate(tool_hint_lines)]
         tool_hint_block = (
-            "## Tools Available\n\n" + "\n\n".join(tool_hint_lines) + "\n\n"
-            if tool_hint_lines else ""
+            "## Tools Available\n\n" + "\n\n".join(numbered) + "\n\n"
+            if numbered else ""
         )
 
         user_message = (
