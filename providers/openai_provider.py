@@ -71,6 +71,7 @@ class OpenAIProvider(LLMProvider):
                 ))
 
         stop = "tool_use" if tool_calls else "end_turn"
+        finish_reason = getattr(choice, "finish_reason", "") or ""
 
         u = resp.usage
         usage = TokenUsage(
@@ -84,6 +85,7 @@ class OpenAIProvider(LLMProvider):
             stop_reason=stop,
             usage=usage,
             raw_content=msg,
+            finish_reason=finish_reason,
         )
 
     def _convert_messages(

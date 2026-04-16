@@ -377,6 +377,34 @@ class BaseSpecialist(ABC):
             )
             _accumulate(response)
 
+        # Some providers (notably OpenAI/gpt-4o) sometimes end the loop with
+        # finish_reason="stop" and empty content — no pending tool calls, no
+        # text. Nudge once to actually write the analysis. Applies to both
+        # the tool-loop and the knowledge-only paths above.
+        response_text = response.text or ""
+        if not response_text.strip() and not response.tool_calls:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "Specialist returned empty text (finish_reason=%r); nudging for final analysis",
+                getattr(response, "finish_reason", ""),
+            )
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You stopped without writing an analysis. "
+                    "Based on the evidence you already gathered (logs, on-chain findings, "
+                    "code you read), write your complete root cause analysis now, ending "
+                    "with the required JSON block. Do not call any more tools."
+                ),
+            })
+            response = provider.create_message(
+                model=model,
+                max_tokens=8192,
+                system=self._build_system(),
+                messages=messages,
+            )
+            _accumulate(response)
+
         raw_analysis = response.text or "[Specialist returned no analysis]"
 
         # Parse the trailing JSON block

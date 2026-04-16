@@ -31,6 +31,12 @@ class LLMResponse:
     stop_reason: str = "end_turn"     # "end_turn" or "tool_use"
     usage: TokenUsage = field(default_factory=TokenUsage)
     raw_content: object = None        # provider-native content for message history
+    # Native finish reason from the underlying provider — free-form string:
+    #   OpenAI:    "stop" | "length" | "tool_calls" | "content_filter" | "function_call"
+    #   Anthropic: "end_turn" | "max_tokens" | "tool_use" | "stop_sequence"
+    # Used by callers that want to distinguish "ran out of things to say" (stop)
+    # from "hit the output cap" (length/max_tokens).
+    finish_reason: str = ""
 
 
 class LLMProvider(ABC):
