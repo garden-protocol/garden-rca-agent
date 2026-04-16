@@ -85,6 +85,24 @@ class Settings(BaseSettings):
     repo_solana_native_swaps: str = "/opt/repos/solana-native-swaps"
     repo_solana_spl_swaps: str = "/opt/repos/solana-spl-swaps"
 
+    # Tron repo paths
+    repo_tron_executor: str = "/opt/repos/tron-executor"
+    repo_tron_watcher: str = "/opt/repos/tron-watcher"
+    repo_tron_relayer: str = "/opt/repos/tron-relayer"
+
+    # Starknet repo paths
+    repo_starknet_executor: str = "/opt/repos/starknet-executor"
+    repo_starknet_watcher: str = "/opt/repos/starknet-watcher"
+    repo_starknet_relayer: str = "/opt/repos/starknet-relayer"
+
+    # Litecoin repo paths
+    repo_litecoin_executor: str = "/opt/repos/litecoin-executor"
+    repo_litecoin_watcher: str = "/opt/repos/litecoin-watcher"
+
+    # Alpen repo paths
+    repo_alpen_executor: str = "/opt/repos/alpen-executor"
+    repo_alpen_watcher: str = "/opt/repos/alpen-watcher"
+
     # Shared library paths (used by multiple chains)
     repo_blockchain: str = "/opt/repos/blockchain"
     repo_garden_rs: str = "/opt/repos/garden-rs"
@@ -104,6 +122,19 @@ class Settings(BaseSettings):
     branch_solana_relayer: str = "staging"
     branch_solana_native_swaps: str = "dev"
     branch_solana_spl_swaps: str = "dev"
+    branch_tron_executor: str = "staging"
+    branch_tron_watcher: str = "staging"
+    branch_tron_relayer: str = "staging"
+    branch_starknet_executor: str = "staging"
+    branch_starknet_watcher: str = "staging"
+    branch_starknet_relayer: str = "staging"
+    branch_litecoin_executor: str = "staging"
+    branch_litecoin_watcher: str = "feat/ltcsuite"
+    branch_alpen_executor: str = "feat/alpen"
+    branch_alpen_watcher: str = "feat/alpen"
+
+    # Quote service
+    branch_quote: str = "staging"
 
     # Shared library branches
     branch_blockchain: str = "main"
@@ -119,6 +150,18 @@ class Settings(BaseSettings):
 
     # Solana RPC
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+
+    # Tron RPC (eth_*-compatible JSON-RPC endpoint)
+    tron_rpc_url: str = ""
+
+    # Starknet RPC
+    starknet_rpc_url: str = ""
+
+    # Litecoin (Electrs indexer REST API)
+    litecoin_electrs_url: str = ""
+
+    # Alpen (Electrs indexer REST API)
+    alpen_electrs_url: str = ""
 
     # Gitea (code access in prod — replaces mounted repos)
     gitea_url: str = ""              # e.g. https://version.btcfi.wtf
@@ -145,11 +188,19 @@ class Settings(BaseSettings):
     relayer_address_bitcoin: str = ""
     relayer_address_evm: str = ""
     relayer_address_solana: str = ""
+    relayer_address_tron: str = ""
+    relayer_address_starknet: str = ""
+    relayer_address_litecoin: str = ""
+    relayer_address_alpen: str = ""
 
     # Minimum native balances before flagging as insufficient
     min_evm_gas_balance: int = 10_000_000_000_000_000    # 0.01 ETH in wei
     min_solana_gas_balance: int = 10_000_000              # 0.01 SOL in lamports
     min_bitcoin_gas_balance: int = 10_000                 # 10k satoshis
+    min_tron_gas_balance: int = 10_000_000                # 10 TRX in SUN
+    min_starknet_gas_balance: int = 1_000_000_000_000_000 # 0.001 ETH in wei
+    min_litecoin_gas_balance: int = 100_000               # 0.001 LTC in litoshis
+    min_alpen_gas_balance: int = 10_000                   # 10k satoshis
 
     def relayer_address(self, chain: str) -> str:
         """Return the configured relayer address for a given internal chain name."""
@@ -157,6 +208,10 @@ class Settings(BaseSettings):
             "bitcoin": self.relayer_address_bitcoin,
             "evm": self.relayer_address_evm,
             "solana": self.relayer_address_solana,
+            "tron": self.relayer_address_tron,
+            "starknet": self.relayer_address_starknet,
+            "litecoin": self.relayer_address_litecoin,
+            "alpen": self.relayer_address_alpen,
         }.get(chain, "")
 
     def min_gas_balance(self, chain: str) -> int:
@@ -165,6 +220,10 @@ class Settings(BaseSettings):
             "bitcoin": self.min_bitcoin_gas_balance,
             "evm": self.min_evm_gas_balance,
             "solana": self.min_solana_gas_balance,
+            "tron": self.min_tron_gas_balance,
+            "starknet": self.min_starknet_gas_balance,
+            "litecoin": self.min_litecoin_gas_balance,
+            "alpen": self.min_alpen_gas_balance,
         }.get(chain, 0)
 
     def repo_branches(self, chain: str) -> dict[str, str]:
@@ -195,6 +254,28 @@ class Settings(BaseSettings):
                 "relayer": self.branch_solana_relayer,
                 "native_swaps": self.branch_solana_native_swaps,
                 "spl_swaps": self.branch_solana_spl_swaps,
+            },
+            "tron": {
+                "executor": self.branch_tron_executor,
+                "watcher": self.branch_tron_watcher,
+                "relayer": self.branch_tron_relayer,
+                "garden_rs": self.branch_garden_rs,
+            },
+            "starknet": {
+                "executor": self.branch_starknet_executor,
+                "watcher": self.branch_starknet_watcher,
+                "relayer": self.branch_starknet_relayer,
+                "garden_rs": self.branch_garden_rs,
+            },
+            "litecoin": {
+                "executor": self.branch_litecoin_executor,
+                "watcher": self.branch_litecoin_watcher,
+                "blockchain_lib": self.branch_blockchain,
+            },
+            "alpen": {
+                "executor": self.branch_alpen_executor,
+                "watcher": self.branch_alpen_watcher,
+                "blockchain_lib": self.branch_blockchain,
             },
         }[chain]
 
@@ -227,6 +308,28 @@ class Settings(BaseSettings):
                 "relayer": self.repo_solana_relayer,
                 "native_swaps": self.repo_solana_native_swaps,
                 "spl_swaps": self.repo_solana_spl_swaps,
+            },
+            "tron": {
+                "executor": self.repo_tron_executor,
+                "watcher": self.repo_tron_watcher,
+                "relayer": self.repo_tron_relayer,
+                "garden_rs": self.repo_garden_rs,
+            },
+            "starknet": {
+                "executor": self.repo_starknet_executor,
+                "watcher": self.repo_starknet_watcher,
+                "relayer": self.repo_starknet_relayer,
+                "garden_rs": self.repo_garden_rs,
+            },
+            "litecoin": {
+                "executor": self.repo_litecoin_executor,
+                "watcher": self.repo_litecoin_watcher,
+                "blockchain_lib": self.repo_blockchain,
+            },
+            "alpen": {
+                "executor": self.repo_alpen_executor,
+                "watcher": self.repo_alpen_watcher,
+                "blockchain_lib": self.repo_blockchain,
             },
         }[chain]
 
@@ -266,6 +369,28 @@ class Settings(BaseSettings):
                 "native_swaps": ("solana-native-swaps", self.branch_solana_native_swaps),
                 "spl_swaps": ("solana-spl-swaps", self.branch_solana_spl_swaps),
             },
+            "tron": {
+                "executor": ("tron-executor", self.branch_tron_executor),
+                "watcher": ("tron-watcher", self.branch_tron_watcher),
+                "relayer": ("tron-relayer", self.branch_tron_relayer),
+                "garden_rs": ("garden-rs", self.branch_garden_rs),
+            },
+            "starknet": {
+                "executor": ("starknet-executor", self.branch_starknet_executor),
+                "watcher": ("garden-starknet-watcher", self.branch_starknet_watcher),
+                "relayer": ("starknet-relayer", self.branch_starknet_relayer),
+                "garden_rs": ("garden-rs", self.branch_garden_rs),
+            },
+            "litecoin": {
+                "executor": ("litecoin-executor", self.branch_litecoin_executor),
+                "watcher": ("litecoin-watcher", self.branch_litecoin_watcher),
+                "blockchain_lib": ("blockchain", self.branch_blockchain),
+            },
+            "alpen": {
+                "executor": ("alpen-executor", self.branch_alpen_executor),
+                "watcher": ("alpen-watcher", self.branch_alpen_watcher),
+                "blockchain_lib": ("blockchain", self.branch_blockchain),
+            },
         }.get(chain, {})
 
     def gitea_solver_repos(self) -> dict[str, tuple[str, str]]:
@@ -275,6 +400,7 @@ class Settings(BaseSettings):
             "solver_comms": ("solver-comms", "staging"),
             "solver_agg": ("solver-agg-v2", "staging"),
             "solver_daemon": ("solver", "stage"),
+            "quote": ("quote", self.branch_quote),
         }
 
 

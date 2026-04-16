@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("rca-agent")
 
-SUPPORTED_CHAINS = {"bitcoin", "evm", "solana"}
+SUPPORTED_CHAINS = {"bitcoin", "evm", "solana", "tron", "starknet", "litecoin", "alpen"}
 
 
 @asynccontextmanager

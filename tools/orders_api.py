@@ -34,6 +34,14 @@ CHAIN_MAP: dict[str, str] = {
     "megaeth":  "evm",
     # Solana
     "solana":   "solana",
+    # Tron
+    "tron":     "tron",
+    # Starknet
+    "starknet": "starknet",
+    # Litecoin
+    "litecoin": "litecoin",
+    # Alpen
+    "alpen":    "alpen",
 }
 
 _ORDER_ID_RE = re.compile(r"[0-9a-fA-F]{64}")

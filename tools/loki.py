@@ -132,8 +132,10 @@ _PRIMARY_SERVICE_MAP: dict[tuple[str, str], str] = {
     ("relayer", "tron"):     "/tron-relayer-mainnet",
     ("watcher", "tron"):     "/tron-watcher",
     ("watcher", "starknet"): "/starknet-watcher-mainnet",
+    ("relayer", "starknet"): "/starknet-relayer-mainnet",
     ("watcher", "spark"):    "/spark-watcher-mainnet",
     ("watcher", "litecoin"): "/litecoin-services-mainnet",
+    ("watcher", "alpen"):    "/alpen-watcher-mainnet",
 }
 
 # Solver Loki: executor services (label is `container`, not `service_name`)
@@ -357,7 +359,7 @@ LOKI_TOOL_DEFINITIONS = [
                 },
                 "chain": {
                     "type": "string",
-                    "enum": ["bitcoin", "evm", "solana", "tron", "starknet", "spark", "litecoin"],
+                    "enum": ["bitcoin", "evm", "solana", "tron", "starknet", "spark", "litecoin", "alpen"],
                     "description": "The chain to query logs for",
                 },
                 "network": {

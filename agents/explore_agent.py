@@ -35,7 +35,7 @@ def _build_repo_registry() -> dict[str, str]:
     This includes all chains (bitcoin, evm, solana), solver repos, and shared libs.
     """
     registry: dict[str, str] = {}
-    for chain in ("bitcoin", "evm", "solana"):
+    for chain in ("bitcoin", "evm", "solana", "tron", "starknet", "litecoin", "alpen"):
         for _component, (repo_name, branch) in settings.gitea_repos(chain).items():
             registry[repo_name] = branch
     for _component, (repo_name, branch) in settings.gitea_solver_repos().items():
@@ -70,6 +70,24 @@ _ALIASES: dict[str, str] = {
     "solver-agg-v2": "solver-agg-v2",
     "solver": "solver",
     "solver-daemon": "solver",
+    "quote": "quote",
+    "quote-server": "quote",
+    "quote server": "quote",
+    # Tron
+    "tron-executor": "tron-executor",
+    "tron-watcher": "tron-watcher",
+    "tron-relayer": "tron-relayer",
+    # Starknet
+    "starknet-executor": "starknet-executor",
+    "starknet-watcher": "garden-starknet-watcher",
+    "garden-starknet-watcher": "garden-starknet-watcher",
+    "starknet-relayer": "starknet-relayer",
+    # Litecoin
+    "litecoin-executor": "litecoin-executor",
+    "litecoin-watcher": "litecoin-watcher",
+    # Alpen
+    "alpen-executor": "alpen-executor",
+    "alpen-watcher": "alpen-watcher",
 }
 
 # Keyword hints: if these appear in the question, bias toward a repo.
@@ -104,6 +122,28 @@ _KEYWORD_HINTS: dict[str, str] = {
     "spl token": "solana-spl-swaps",
     "blockchain lib": "blockchain",
     "garden-rs": "garden-rs",
+    "quote price": "quote",
+    "price quote": "quote",
+    # Tron
+    "tron executor": "tron-executor",
+    "tron watcher": "tron-watcher",
+    "tron relay": "tron-relayer",
+    "trc20": "tron-executor",
+    "gardenhtlcv3": "tron-executor",
+    # Starknet
+    "starknet executor": "starknet-executor",
+    "starknet watcher": "garden-starknet-watcher",
+    "starknet relay": "starknet-relayer",
+    "cairo": "starknet-executor",
+    "snip-12": "starknet-executor",
+    # Litecoin
+    "litecoin executor": "litecoin-executor",
+    "litecoin watcher": "litecoin-watcher",
+    "ltc": "litecoin-executor",
+    "ltcsuite": "litecoin-executor",
+    # Alpen
+    "alpen executor": "alpen-executor",
+    "alpen watcher": "alpen-watcher",
 }
 
 
@@ -148,7 +188,7 @@ def _load_relevant_knowledge(repo_name: str) -> str:
     """Load knowledge docs relevant to the target repo, if any."""
     # Map repo names to knowledge doc chains
     repo_to_chain: dict[str, str] = {}
-    for chain in ("bitcoin", "evm", "solana"):
+    for chain in ("bitcoin", "evm", "solana", "tron", "starknet", "litecoin", "alpen"):
         for _component, (rname, _branch) in settings.gitea_repos(chain).items():
             repo_to_chain[rname] = chain
 
