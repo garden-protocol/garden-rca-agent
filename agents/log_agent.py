@@ -76,19 +76,28 @@ def run(alert: Alert) -> dict:
     Returns:
         dict with 'summary' (str markdown report) and 'raw_lines' (list[str])
     """
-    # Compute the log query time window: order_created_at ± 1hr
+    # Compute the log query time window:
+    #   start = order_created_at - 5 minutes (catches pre-order orderbook validation)
+    #   end   = min(deadline + 30 minutes, now)  — falls back to +4h if no deadline
     order_created_at_str = (alert.metadata or {}).get("order_created_at")
     if order_created_at_str:
         order_created_at = datetime.fromisoformat(
             order_created_at_str.replace("Z", "+00:00")
         )
     else:
-        # Fallback to alert timestamp if order_created_at not available
         order_created_at = alert.timestamp
 
     now = datetime.now(timezone.utc)
-    window_start = order_created_at.isoformat()
-    window_end = min(order_created_at + timedelta(hours=1), now).isoformat()
+    window_start = (order_created_at - timedelta(minutes=5)).isoformat()
+
+    deadline_unix = (alert.metadata or {}).get("deadline")
+    if deadline_unix:
+        window_end_dt = datetime.fromtimestamp(
+            deadline_unix, tz=timezone.utc
+        ) + timedelta(minutes=30)
+    else:
+        window_end_dt = order_created_at + timedelta(hours=4)
+    window_end = min(window_end_dt, now).isoformat()
 
     solver_id = (alert.metadata or {}).get("solver_id", "")
 
@@ -113,7 +122,8 @@ def run(alert: Alert) -> dict:
         f"Alert details:\n{alert_context}\n\n"
         f"**IMPORTANT — Time window and solver_id for all queries:**\n"
         f"Use start_iso=\"{window_start}\" and end_iso=\"{window_end}\" "
-        f"(order_created_at to created_at + 1 hour) for ALL log queries. "
+        f"(order lifetime window: created_at -5min to min(deadline+30min, now)) "
+        f"for ALL log queries. "
         f"Do NOT use minutes_back — always pass explicit start_iso/end_iso.\n"
         f"{'Always pass solver_id=\"' + solver_id + '\" to narrow executor log queries.' if solver_id else 'No solver_id available for this order.'}\n\n"
         f"**Query strategy:**\n"
