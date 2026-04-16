@@ -168,6 +168,16 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
                     f"Order lifetime (created_at to deadline): {lifetime_mins:.0f} minutes. "
                 )
 
+        # Blacklisted refunds are working-as-designed: the blacklist prevented
+        # the solver from initiating and the source timelock refunded the user.
+        # No specialist / remediation needed, even when investigate=true.
+        if co.additional_data.is_blacklisted:
+            return _early(
+                f"Order was blacklisted and refunded as expected. "
+                f"{lifetime_str}{refund_context} "
+                f"No remediation needed — blacklist filtering worked correctly."
+            )
+
         if not force_investigate:
             return _early(
                 f"Order has been refunded. {lifetime_str}{refund_context} "
