@@ -407,8 +407,17 @@ LOKI_TOOL_DEFINITIONS = [
             "properties": {
                 "service": {
                     "type": "string",
-                    "enum": ["executor", "watcher", "relayer"],
-                    "description": "The service to query logs for",
+                    "enum": [
+                        "executor", "watcher", "relayer",
+                        "solver-engine", "solver-comms", "orderbook",
+                    ],
+                    "description": (
+                        "Service to query logs for. "
+                        "Chain-scoped: executor, watcher, relayer (require matching chain/network). "
+                        "Shared (chain arg ignored): solver-engine + solver-comms on solver Loki "
+                        "(filtered by solver_id when provided); orderbook on primary Loki "
+                        "(contains quote service logs)."
+                    ),
                 },
                 "chain": {
                     "type": "string",
@@ -435,7 +444,12 @@ LOKI_TOOL_DEFINITIONS = [
                 },
                 "level_filter": {
                     "type": "string",
-                    "description": "Optional log level keyword to filter by, e.g. 'error' or 'warn'",
+                    "description": (
+                        "Log level to filter on: 'error', 'warn', 'info', 'debug'. "
+                        "Matches JSON ('level':'error'), logfmt (level=error), and bracketed ([ERROR]) "
+                        "tokens. Case-insensitive. For freeform keyword filtering use `query_loki` "
+                        "with a full LogQL query instead."
+                    ),
                     "default": "",
                 },
                 "solver_id": {
