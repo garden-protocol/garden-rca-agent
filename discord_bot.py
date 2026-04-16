@@ -96,12 +96,16 @@ def _build_rca_embed(data: dict) -> discord.Embed:
     src     = data.get("source_chain", "?")
     dst     = data.get("destination_chain", "?")
 
-    severity   = report.get("severity", "medium")
-    confidence = report.get("confidence", "low")
-    root_cause = report.get("root_cause", "Unknown")
-    actions    = report.get("remediation_actions", [])
-    components = report.get("affected_components", [])
+    severity      = report.get("severity", "medium")
+    confidence    = report.get("confidence", "low")
+    root_cause    = report.get("root_cause", "Unknown")
+    actions       = report.get("remediation_actions", [])
+    components    = report.get("affected_components", [])
     investigation = report.get("investigation_summary", "")
+    timeline      = report.get("timeline", [])
+    ruled_out     = report.get("hypotheses_ruled_out", [])
+    next_action   = report.get("next_action", "")
+    links         = report.get("links", [])
 
     colour = _SEVERITY_COLOUR.get(severity, discord.Colour.light_grey())
 
@@ -113,9 +117,16 @@ def _build_rca_embed(data: dict) -> discord.Embed:
     embed.add_field(name="Order ID", value=f"`{data.get('order_id', '?')}`", inline=False)
     embed.add_field(name="Route",    value=f"{src} → {dst}", inline=True)
     embed.add_field(name="Duration", value=f"{data.get('duration_seconds', '?')}s", inline=True)
-    embed.add_field(name="AI Cost",  value=_format_cost(data.get("ai_cost")),        inline=True)
+    embed.add_field(name="AI Cost",  value=_format_cost(data.get("ai_cost")), inline=True)
 
-    # Investigation Summary — what the bot checked and found
+    # What to do now — most prominent actionable field
+    if next_action:
+        embed.add_field(
+            name="▶ What to do now",
+            value=_truncate(next_action, 1024),
+            inline=False,
+        )
+
     if investigation:
         embed.add_field(
             name="Investigation Summary",
@@ -123,12 +134,41 @@ def _build_rca_embed(data: dict) -> discord.Embed:
             inline=False,
         )
 
-    # Remediation Actions — only human-actionable steps
+    # Timeline
+    if timeline:
+        lines: list[str] = []
+        for entry in timeline[:5]:
+            if not isinstance(entry, dict):
+                continue
+            ts = entry.get("timestamp", "")
+            ev = entry.get("event", "")
+            if not ev:
+                continue
+            if ts:
+                lines.append(f"`{ts}` — {ev}")
+            else:
+                lines.append(f"• {ev}")
+        if lines:
+            embed.add_field(
+                name="Timeline",
+                value=_truncate("\n".join(lines), 1024),
+                inline=False,
+            )
+
     if actions:
         actions = actions[:5]
         embed.add_field(
             name="Remediation Actions",
             value=_truncate("\n".join(f"{i+1}. {a}" for i, a in enumerate(actions)), 1024),
+            inline=False,
+        )
+
+    # Ruled Out
+    if ruled_out:
+        ruled_lines = [f"• {h}" for h in ruled_out[:3]]
+        embed.add_field(
+            name="Ruled Out",
+            value=_truncate("\n".join(ruled_lines), 1024),
             inline=False,
         )
 
@@ -141,7 +181,6 @@ def _build_rca_embed(data: dict) -> discord.Embed:
                 line = ev.get("line", "")
                 sig = ev.get("significance", "")
                 if line:
-                    # Truncate long log lines
                     display_line = line[:120] + "..." if len(line) > 120 else line
                     entry = f"`{display_line}`"
                     if sig:
@@ -154,10 +193,41 @@ def _build_rca_embed(data: dict) -> discord.Embed:
                 inline=False,
             )
 
+    # Affected Components (with links if available)
     if components:
+        code_links = {l.get("label", ""): l.get("url", "")
+                      for l in links if isinstance(l, dict) and l.get("kind") == "code"}
+        rendered = []
+        for c in components:
+            url = code_links.get(c)
+            if not url:
+                # Try prefix match: component is a substring of a link label
+                for label, u in code_links.items():
+                    if c in label or label in c:
+                        url = u
+                        break
+            if url:
+                rendered.append(f"• [{c}]({url})")
+            else:
+                rendered.append(f"• {c}")
         embed.add_field(
             name="Affected Components",
-            value=_truncate("\n".join(f"• {c}" for c in components), 512),
+            value=_truncate("\n".join(rendered), 512),
+            inline=False,
+        )
+
+    # Links field (skip tx links already rendered; show order + any remaining)
+    tx_links   = [l for l in links if isinstance(l, dict) and l.get("kind") == "tx"]
+    order_link = next((l for l in links if isinstance(l, dict) and l.get("kind") == "order"), None)
+    link_lines: list[str] = []
+    if order_link:
+        link_lines.append(f"[{order_link.get('label','order')}]({order_link.get('url','')})")
+    for l in tx_links[:6]:
+        link_lines.append(f"[{l.get('label','tx')}]({l.get('url','')})")
+    if link_lines:
+        embed.add_field(
+            name="Links",
+            value=_truncate("  •  ".join(link_lines), 1024),
             inline=False,
         )
 
