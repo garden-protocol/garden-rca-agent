@@ -254,6 +254,17 @@ def search_by_service(
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes_back)
 
+    # ── Shared solver-Loki services (solver-engine, solver-comms) ────────
+    if service in _SOLVER_SHARED_SERVICES:
+        svc_name = _SOLVER_SHARED_SERVICES[service]
+        labels: list[str] = [f'service_name="{svc_name}"']
+        if solver_id:
+            labels.append(f'solver_id="{solver_id}"')
+        logql = "{" + ", ".join(labels) + "}"
+        if level_filter:
+            logql += f' |= `{level_filter}`'
+        return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
+
     if service == "executor":
         # Route to solver Loki — use solver_id + service_name when available
         svc_name = _SOLVER_SERVICE_MAP.get(chain)
