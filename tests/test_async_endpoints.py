@@ -98,6 +98,58 @@ def test_post_and_poll_happy_path(client, secret):
     assert body["result"]["reason"].startswith("stub for happy")
 
 
+def test_job_response_has_no_raw_control_chars(client, secret, monkeypatch):
+    """
+    Response bodies must be strict-JSON-parseable. A RCAReport with raw
+    newlines inside raw_analysis (a common case — the specialist's markdown
+    block contains literal newlines) must come back with those newlines
+    escaped, not as raw 0x0a bytes.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    from models.investigate import InvestigateResponse, SwapState
+    from models.report import RCAReport
+    import agents.orchestrator as orchestrator
+
+    def _fake_with_newlines(order_id, force):
+        rca = RCAReport(
+            order_id=order_id,
+            chain="evm", service="executor", network="mainnet",
+            root_cause="test",
+            affected_components=["a"],
+            remediation_actions=["b"],
+            severity="low", confidence="high",
+            raw_analysis="```json\n{\n  \"k\": \"v\"\n}\n```",  # raw newlines
+            generated_at=_dt.now(_tz.utc), duration_seconds=0.1,
+        )
+        return InvestigateResponse(
+            order_id=order_id, state=SwapState.REFUNDED,
+            source_chain="evm", destination_chain="bitcoin",
+            early_return=False, rca_report=rca,
+            generated_at=_dt.now(_tz.utc), duration_seconds=0.1,
+        )
+
+    monkeypatch.setattr(orchestrator, "investigate", _fake_with_newlines)
+
+    post = client.post(f"/investigate/{secret}", json={"order_id": "nl"})
+    job_id = post.json()["job_id"]
+    for _ in range(30):
+        r = client.get(f"/jobs/{secret}/{job_id}")
+        if r.json()["status"] == "done":
+            break
+        time.sleep(0.05)
+
+    # Raw bytes must not contain any control chars (0x00..0x1f, except tab/none here).
+    raw = r.content
+    bad = [i for i, b in enumerate(raw) if b < 0x20]
+    assert not bad, (
+        f"response contains {len(bad)} raw control chars at offsets "
+        f"{bad[:5]} — strict JSON parsers will reject it"
+    )
+    # And strict json.loads must succeed
+    import json as _stdjson
+    _stdjson.loads(raw)  # strict=True by default; raises if invalid
+
+
 def test_post_and_poll_failure_path(client, secret, monkeypatch):
     import agents.orchestrator as orchestrator
 

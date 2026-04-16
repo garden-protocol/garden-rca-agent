@@ -11,6 +11,7 @@ Required env vars:
   SERVER_SECRET      — Same secret used by the RCA agent endpoint
 """
 import asyncio
+import json as _json
 import logging
 import os
 import time
@@ -19,6 +20,20 @@ import discord
 import httpx
 from discord import app_commands
 from dotenv import load_dotenv
+
+
+def _lenient_json(resp: httpx.Response) -> dict:
+    """
+    Parse a JSON response with strict=False so that raw control characters
+    (e.g. unescaped newlines inside string values, which some server-side
+    JSON encoders emit even though RFC 8259 forbids them) don't blow up the
+    bot. Prefer `resp.json()` where available; fall back to `json.loads`
+    with strict=False on failure.
+    """
+    try:
+        return resp.json()
+    except Exception:
+        return _json.loads(resp.text, strict=False)
 
 load_dotenv()
 
@@ -253,7 +268,7 @@ async def _investigate_with_polling(
         async with httpx.AsyncClient(timeout=30.0) as http:
             resp = await http.post(post_url, json={"order_id": order_id, "investigate": investigate})
             resp.raise_for_status()
-            enqueue = resp.json()
+            enqueue = _lenient_json(resp)
     except httpx.HTTPStatusError as exc:
         await interaction.followup.send(
             f"RCA agent returned `{exc.response.status_code}`: {exc.response.text[:500]}"
@@ -282,7 +297,7 @@ async def _investigate_with_polling(
             try:
                 r = await http.get(poll_url)
                 r.raise_for_status()
-                job = r.json()
+                job = _lenient_json(r)
             except Exception as exc:
                 logger.warning("Poll transient error: %s", exc)
                 continue
@@ -387,7 +402,7 @@ async def explore(interaction: discord.Interaction, question: str):
         async with httpx.AsyncClient(timeout=300.0) as http:
             resp = await http.post(url, json={"question": question})
             resp.raise_for_status()
-            data = resp.json()
+            data = _lenient_json(resp)
     except httpx.HTTPStatusError as exc:
         await interaction.followup.send(
             f"RCA agent returned `{exc.response.status_code}`: {exc.response.text[:500]}"
