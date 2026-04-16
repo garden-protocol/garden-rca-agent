@@ -254,16 +254,33 @@ def search_by_service(
 ) -> list[str]:
     """
     Search logs for a specific service/chain/network combination.
-    Routes executor queries to solver Loki; all others to primary Loki.
+
+    Four routing branches, evaluated in order:
+      1. Solver-shared services (solver-engine, solver-comms): routed to solver
+         Loki, filtered by service_name and optionally solver_id. Chain/network
+         args are accepted for API symmetry but ignored.
+      2. Primary-shared services (orderbook): routed to primary Loki, filtered
+         by service_name. Chain, network, and solver_id args are ignored.
+      3. executor: routed to solver Loki using _SOLVER_SERVICE_MAP for
+         service_name; optionally narrowed by solver_id.
+      4. Fallback (watcher, relayer, and any other chain-scoped service):
+         routed to primary Loki. If the (service, chain) pair is in
+         _PRIMARY_SERVICE_MAP, the mapped container label is used directly.
+         Otherwise a job-wide selector with a substring filter on
+         `<chain>-<service>` is emitted. level_filter is applied (as a
+         regex) on top of whichever selector was chosen.
 
     Args:
-        service: Service name (executor, watcher, relayer)
-        chain: Chain name (bitcoin, evm, solana, tron, starknet, ...)
+        service: Service name — chain-scoped: executor, watcher, relayer;
+                 shared (chain ignored): solver-engine, solver-comms, orderbook
+        chain: Chain name (bitcoin, evm, solana, tron, starknet, spark,
+               litecoin, alpen, xrpl, ...)
         network: Network (mainnet, testnet)
         start_iso: Explicit start time in ISO 8601 format (overrides minutes_back)
         end_iso: Explicit end time in ISO 8601 format (overrides minutes_back)
         minutes_back: Fallback if start_iso/end_iso not provided
-        level_filter: Optional log level filter, e.g. 'error' or 'warn'
+        level_filter: Optional log level filter, e.g. 'error' or 'warn'.
+                      Emits a RE2-compatible regex via _level_filter_logql.
         solver_id: Optional solver ID from order response — narrows solver Loki query
 
     Returns:

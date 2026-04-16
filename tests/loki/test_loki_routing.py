@@ -7,9 +7,12 @@ and do not require a configured Loki instance. They assert:
   - Correct Loki instance (primary vs solver) is selected per service
   - Correct LogQL label selector is built
   - solver_id filter is applied only where appropriate
-  - level_filter regex matches real level tokens but not arbitrary substrings
+  - level_filter regex matches real log level tokens but not arbitrary substrings
+  - Emitted regex is RE2-compatible (no lookarounds)
+  - Fallback path uses substring match, not a level regex, for the service name
 """
 import os
+import re
 import sys
 from unittest.mock import patch
 
@@ -21,6 +24,7 @@ from tools import loki as loki_mod
 from tools.loki import (
     _PRIMARY_SHARED_SERVICES,
     _SOLVER_SHARED_SERVICES,
+    _level_filter_logql,
     search_by_service,
 )
 
@@ -43,6 +47,23 @@ def _call_and_capture(service, chain="evm", network="mainnet", **kwargs):
     return captured
 
 
+def _compile_level_regex(level: str) -> re.Pattern:
+    """Extract and compile the regex embedded in a _level_filter_logql fragment."""
+    frag = _level_filter_logql(level)
+    pattern = frag.split("`")[1]
+    return re.compile(pattern)
+
+
+# ── Fixtures ─────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def patched_urls():
+    """Patch both Loki URL helpers to deterministic test values."""
+    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
+        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
+            yield
+
+
 # ── Sentinel test: maps must exist ──────────────────────────────────────────
 
 def test_shared_service_maps_exist():
@@ -54,43 +75,37 @@ def test_shared_service_maps_exist():
 
 # ── Solver-shared service routing ────────────────────────────────────────────
 
-def test_solver_engine_routes_to_solver_loki_with_solver_id():
+def test_solver_engine_routes_to_solver_loki_with_solver_id(patched_urls):
     """solver-engine + solver_id → solver Loki, LogQL filters by both labels."""
-    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
-        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
-            captured = _call_and_capture(
-                "solver-engine",
-                chain="evm",
-                network="mainnet",
-                solver_id="s-123",
-            )
+    captured = _call_and_capture(
+        "solver-engine",
+        chain="evm",
+        network="mainnet",
+        solver_id="s-123",
+    )
     assert captured["base_url"] == "http://solver.loki"
     assert 'service_name="solver-engine"' in captured["logql"]
     assert 'solver_id="s-123"' in captured["logql"]
 
 
-def test_solver_engine_routes_to_solver_loki_without_solver_id():
+def test_solver_engine_routes_to_solver_loki_without_solver_id(patched_urls):
     """solver-engine with no solver_id → still routes to solver Loki."""
-    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
-        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
-            captured = _call_and_capture(
-                "solver-engine", chain="evm", network="mainnet",
-            )
+    captured = _call_and_capture(
+        "solver-engine", chain="evm", network="mainnet",
+    )
     assert captured["base_url"] == "http://solver.loki"
     assert 'service_name="solver-engine"' in captured["logql"]
     assert "solver_id" not in captured["logql"]
 
 
-def test_solver_comms_routes_to_solver_loki():
+def test_solver_comms_routes_to_solver_loki(patched_urls):
     """solver-comms behaves the same as solver-engine."""
-    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
-        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
-            captured = _call_and_capture(
-                "solver-comms",
-                chain="evm",
-                network="mainnet",
-                solver_id="s-999",
-            )
+    captured = _call_and_capture(
+        "solver-comms",
+        chain="evm",
+        network="mainnet",
+        solver_id="s-999",
+    )
     assert captured["base_url"] == "http://solver.loki"
     assert 'service_name="solver-comms"' in captured["logql"]
     assert 'solver_id="s-999"' in captured["logql"]
@@ -98,25 +113,20 @@ def test_solver_comms_routes_to_solver_loki():
 
 # ── Primary-shared service routing ───────────────────────────────────────────
 
-def test_orderbook_routes_to_primary_loki():
+def test_orderbook_routes_to_primary_loki(patched_urls):
     """orderbook → primary Loki, uses configured service_name, ignores solver_id."""
-    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
-        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
-            captured = _call_and_capture(
-                "orderbook",
-                chain="evm",
-                network="mainnet",
-                solver_id="s-123",  # should be ignored
-            )
+    captured = _call_and_capture(
+        "orderbook",
+        chain="evm",
+        network="mainnet",
+        solver_id="s-123",  # should be ignored
+    )
     assert captured["base_url"] == "http://primary.loki"
     assert 'service_name="/orderbook-mainnet"' in captured["logql"]
     assert "solver_id" not in captured["logql"]
 
 
 # ── Level filter regex ───────────────────────────────────────────────────────
-
-from tools.loki import _level_filter_logql  # introduced in this task
-
 
 def test_level_filter_produces_regex_filter():
     """level_filter should emit |~ (regex) LogQL, not |= (substring)."""
@@ -127,53 +137,39 @@ def test_level_filter_produces_regex_filter():
 
 def test_level_filter_matches_json_logs():
     """Simulate the regex fragment against sample JSON log lines."""
-    import re
-    frag = _level_filter_logql("error")
-    pattern = frag.split("`")[1]  # extract the regex between backticks
-    compiled = re.compile(pattern)
+    compiled = _compile_level_regex("error")
     assert compiled.search('{"level":"error","msg":"oops"}')
     assert compiled.search('{"msg":"oops","level":"ERROR"}')  # case-insensitive
 
 
 def test_level_filter_matches_logfmt():
-    import re
-    frag = _level_filter_logql("warn")
-    pattern = frag.split("`")[1]
-    compiled = re.compile(pattern)
+    compiled = _compile_level_regex("warn")
     assert compiled.search("ts=2026-04-10 level=warn msg=backoff")
     assert compiled.search("level = warn msg=...")
 
 
 def test_level_filter_matches_bracketed_level():
-    import re
-    frag = _level_filter_logql("error")
-    pattern = frag.split("`")[1]
-    compiled = re.compile(pattern)
+    compiled = _compile_level_regex("error")
     assert compiled.search("2026-04-10 [ERROR] connection refused")
     assert compiled.search("ERROR: something failed")
 
 
 def test_level_filter_does_not_match_substring_error():
     """The whole point: substring 'error' inside words must NOT match."""
-    import re
-    frag = _level_filter_logql("error")
-    pattern = frag.split("`")[1]
-    compiled = re.compile(pattern)
+    compiled = _compile_level_regex("error")
     assert not compiled.search("no error occurred today")
     assert not compiled.search("error_count=0 completed ok")
     assert not compiled.search("had an error-free run")
 
 
-def test_search_by_service_uses_regex_filter_for_level():
+def test_search_by_service_uses_regex_filter_for_level(patched_urls):
     """Integration: search_by_service with level_filter emits |~ in LogQL."""
-    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
-        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
-            captured = _call_and_capture(
-                "watcher",
-                chain="evm",
-                network="mainnet",
-                level_filter="error",
-            )
+    captured = _call_and_capture(
+        "watcher",
+        chain="evm",
+        network="mainnet",
+        level_filter="error",
+    )
     assert "|~" in captured["logql"]
     assert "|= `error`" not in captured["logql"]
 
@@ -191,19 +187,17 @@ def test_level_filter_regex_has_no_lookarounds():
 
 # ── Fallback substring match preserved ───────────────────────────────────────
 
-def test_fallback_service_uses_substring_not_level_regex():
+def test_fallback_service_uses_substring_not_level_regex(patched_urls):
     """
     When (service, chain) has no entry in _PRIMARY_SERVICE_MAP, the fallback
     must use a substring filter on `<chain>-<service>` (e.g. `xrpl-watcher`),
     NOT a level regex.
     """
-    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
-        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
-            captured = _call_and_capture(
-                "watcher",
-                chain="xrpl",       # not in _PRIMARY_SERVICE_MAP
-                network="mainnet",
-            )
+    captured = _call_and_capture(
+        "watcher",
+        chain="xrpl",       # not in _PRIMARY_SERVICE_MAP
+        network="mainnet",
+    )
     assert captured["base_url"] == "http://primary.loki"
     assert "|= `xrpl-watcher`" in captured["logql"]
     # Must not emit the level-regex pattern for the service name
@@ -211,18 +205,16 @@ def test_fallback_service_uses_substring_not_level_regex():
     assert "(?i)" not in captured["logql"]
 
 
-def test_fallback_with_level_filter_applies_both():
+def test_fallback_with_level_filter_applies_both(patched_urls):
     """
     Fallback path + explicit level_filter → substring for service, regex for level.
     """
-    with patch.object(loki_mod, "_solver_url", return_value="http://solver.loki"):
-        with patch.object(loki_mod, "_primary_url", return_value="http://primary.loki"):
-            captured = _call_and_capture(
-                "watcher",
-                chain="xrpl",
-                network="mainnet",
-                level_filter="error",
-            )
+    captured = _call_and_capture(
+        "watcher",
+        chain="xrpl",
+        network="mainnet",
+        level_filter="error",
+    )
     assert "|= `xrpl-watcher`" in captured["logql"]
     assert "|~" in captured["logql"]          # level regex applied
     assert "(?i)" in captured["logql"]
