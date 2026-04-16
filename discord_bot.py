@@ -10,8 +10,10 @@ Required env vars:
   RCA_AGENT_URL      — Base URL of the RCA agent, e.g. https://rca.garden.finance
   SERVER_SECRET      — Same secret used by the RCA agent endpoint
 """
+import asyncio
 import logging
 import os
+import time
 
 import discord
 import httpx
@@ -235,6 +237,72 @@ def _build_rca_embed(data: dict) -> discord.Embed:
     return embed
 
 
+async def _investigate_with_polling(
+    interaction: discord.Interaction,
+    order_id: str,
+    investigate: bool,
+) -> dict | None:
+    """
+    POST /investigate then poll GET /jobs every 5s until terminal status.
+
+    Returns the raw InvestigateResponse dict on success, None on failure
+    (an error followup will have been sent to the interaction already).
+    """
+    post_url = f"{RCA_AGENT_URL}/investigate/{SERVER_SECRET}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            resp = await http.post(post_url, json={"order_id": order_id, "investigate": investigate})
+            resp.raise_for_status()
+            enqueue = resp.json()
+    except httpx.HTTPStatusError as exc:
+        await interaction.followup.send(
+            f"RCA agent returned `{exc.response.status_code}`: {exc.response.text[:500]}"
+        )
+        return None
+    except Exception as exc:
+        logger.exception("Enqueue failed")
+        await interaction.followup.send(f"Failed to enqueue investigation: {exc}")
+        return None
+
+    job_id = enqueue.get("job_id")
+    poll_path = enqueue.get("poll_url", "")
+    if not job_id or not poll_path:
+        await interaction.followup.send(
+            f"Unexpected response from RCA agent: {enqueue}"
+        )
+        return None
+
+    poll_url = f"{RCA_AGENT_URL}{poll_path}"
+    logger.info("Polling job %s for order %s", job_id, order_id)
+
+    deadline = time.monotonic() + 14 * 60  # Discord defer window is 15 min
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        while time.monotonic() < deadline:
+            await asyncio.sleep(5)
+            try:
+                r = await http.get(poll_url)
+                r.raise_for_status()
+                job = r.json()
+            except Exception as exc:
+                logger.warning("Poll transient error: %s", exc)
+                continue
+
+            status = job.get("status")
+            if status == "done":
+                return job.get("result")
+            if status == "failed":
+                await interaction.followup.send(
+                    f"Investigation failed: {job.get('error', 'unknown error')}"
+                )
+                return None
+            # still queued or running → keep polling
+
+    await interaction.followup.send(
+        f"Investigation exceeded 14 min; job `{job_id}` may still be running on the server"
+    )
+    return None
+
+
 class RCABot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -264,26 +332,12 @@ client = RCABot()
     investigate="Run full LLM analysis even for refunded/early-return orders (default: False)",
 )
 async def investigate(interaction: discord.Interaction, order_id: str, investigate: bool = False):
-    # Acknowledge immediately — investigation can take 30-60s
     await interaction.response.defer(thinking=True)
+    logger.info("Investigating order %s (investigate=%s)", order_id, investigate)
 
-    url = f"{RCA_AGENT_URL}/investigate/{SERVER_SECRET}"
-    logger.info("Investigating order %s (investigate=%s) via %s", order_id, investigate, url)
-
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as http:
-            resp = await http.post(url, json={"order_id": order_id, "investigate": investigate})
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPStatusError as exc:
-        await interaction.followup.send(
-            f"❌ RCA agent returned `{exc.response.status_code}`: {exc.response.text[:500]}"
-        )
-        return
-    except Exception as exc:
-        logger.exception("RCA request failed")
-        await interaction.followup.send(f"❌ Failed to reach RCA agent: {exc}")
-        return
+    data = await _investigate_with_polling(interaction, order_id, investigate)
+    if data is None:
+        return  # error followup already sent
 
     if data.get("early_return"):
         embed = _build_early_return_embed(data)

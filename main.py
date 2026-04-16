@@ -21,6 +21,8 @@ from models.investigate import AgentTokenUsage
 import agents.orchestrator as orchestrator
 import agents.explore_agent as explore_agent
 import study.study_agent as study_agent
+import jobs as job_store
+from jobs import JobStatus
 
 
 logging.basicConfig(
@@ -52,14 +54,26 @@ def health():
     return {"status": "ok", "chains": list(SUPPORTED_CHAINS)}
 
 
-@app.post("/investigate/{server_secret}", response_model=InvestigateResponse)
+async def _run_investigation(job_id: str, order_id: str, investigate: bool):
+    """Background task — runs orchestrator.investigate and records the result."""
+    await job_store.set_running(job_id)
+    try:
+        result = await asyncio.to_thread(orchestrator.investigate, order_id, investigate)
+        await job_store.set_done(job_id, result)
+        logger.info("Job %s: done order=%s", job_id, order_id)
+    except Exception as exc:
+        logger.exception("Job %s failed for order %s", job_id, order_id)
+        await job_store.set_failed(job_id, f"{type(exc).__name__}: {exc}")
+
+
+@app.post("/investigate/{server_secret}", status_code=202)
 async def investigate_order(server_secret: str, req: InvestigateRequest):
     """
-    Order-state-aware investigation endpoint (auth required via path secret).
+    Enqueue an investigation job. Returns 202 with a job_id; poll
+    GET /jobs/{server_secret}/{job_id} for status and result.
 
-    Accepts a raw order ID or a full Garden Finance URL.
-    Automatically classifies the swap state, runs cheap deterministic checks first,
-    and escalates to the full LLM pipeline only when needed.
+    Made async in Batch D — some investigations exceed Cloudflare's
+    100s proxy timeout; a queued job pattern is safer.
 
     States detected:
       - DestInitPending      — source inited, destination not yet inited
@@ -77,21 +91,36 @@ async def investigate_order(server_secret: str, req: InvestigateRequest):
     """
     if server_secret != settings.server_secret:
         raise HTTPException(status_code=403, detail="Forbidden")
+    job = await job_store.create()
+    logger.info("Investigate enqueued: order=%s job_id=%s", req.order_id, job.id)
+    asyncio.create_task(_run_investigation(job.id, req.order_id, req.investigate))
+    return {
+        "job_id": job.id,
+        "status": job.status.value,
+        "poll_url": f"/jobs/{server_secret}/{job.id}",
+    }
 
-    logger.info("Investigate request: order=%s", req.order_id)
-    try:
-        response = await asyncio.to_thread(orchestrator.investigate, req.order_id, req.investigate)
-        logger.info(
-            "Investigate complete: order=%s state=%s early_return=%s duration=%.1fs",
-            response.order_id,
-            response.state.value,
-            response.early_return,
-            response.duration_seconds,
-        )
-        return response
-    except Exception as exc:
-        logger.exception("Investigation failed for order %s", req.order_id)
-        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/jobs/{server_secret}/{job_id}")
+async def get_job(server_secret: str, job_id: str):
+    """Poll a job's status. Returns 404 if unknown or expired."""
+    if server_secret != settings.server_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    job = await job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+
+    payload: dict = {
+        "status": job.status.value,
+        "created_at": job.created_at.isoformat(),
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+    if job.status == JobStatus.DONE and job.result is not None:
+        payload["result"] = job.result.model_dump(mode="json")
+    elif job.status == JobStatus.FAILED:
+        payload["error"] = job.error
+    return payload
 
 
 @app.post("/explore/{server_secret}", response_model=ExploreResponse)
