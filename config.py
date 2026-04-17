@@ -171,6 +171,10 @@ class Settings(BaseSettings):
     # Server
     port: int = 8000
 
+    # Discord webhook — investigation results are POSTed here when set.
+    # Leave empty to disable webhook delivery.
+    discord_webhook_url: str = ""
+
     # ── Investigation pipeline ────────────────────────────────────────────────
 
     # Max % deviation between source filled_amount and expected amount before skipping

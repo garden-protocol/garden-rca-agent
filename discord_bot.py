@@ -1,20 +1,21 @@
 """
 Garden RCA Discord Bot.
 
-Slash command: /investigate <order_id>
-  - Calls POST /investigate/{server_secret} on the RCA agent
-  - Posts a formatted embed with the result
+Slash commands:
+  /investigate <order_id> — enqueues an investigation on the RCA agent.
+                            Results are posted to the configured Discord
+                            webhook channel by the agent itself — the bot
+                            only acknowledges the enqueue.
+  /explore <question>     — codebase Q&A; result posted as an embed reply.
 
 Required env vars:
   DISCORD_BOT_TOKEN  — Discord bot token
   RCA_AGENT_URL      — Base URL of the RCA agent, e.g. https://rca.garden.finance
   SERVER_SECRET      — Same secret used by the RCA agent endpoint
 """
-import asyncio
 import json as _json
 import logging
 import os
-import time
 
 import discord
 import httpx
@@ -48,274 +49,9 @@ RCA_AGENT_URL     = os.getenv("RCA_AGENT_URL", "http://localhost:8080").rstrip("
 SERVER_SECRET     = os.getenv("SERVER_SECRET", "")
 DISCORD_GUILD_ID  = os.getenv("DISCORD_GUILD_ID", "")
 
-# Severity → Discord colour
-_SEVERITY_COLOUR = {
-    "critical": discord.Colour.red(),
-    "high":     discord.Colour.orange(),
-    "medium":   discord.Colour.yellow(),
-    "low":      discord.Colour.green(),
-}
-
-# SwapState → human label
-_STATE_LABEL = {
-    "DestInitPending":      "Dest Init Pending",
-    "UserRedeemPending":    "User Redeem Pending",
-    "SolverRedeemPending":  "Solver Redeem Pending",
-    "UserNotInited":        "User Not Inited",
-    "Refunded":             "Refunded",
-    "Unknown":              "Unknown",
-}
-
 
 def _truncate(text: str, limit: int = 1000) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
-
-
-def _format_cost(ai_cost: dict | None) -> str:
-    """Return a compact cost string for the embed footer / field."""
-    if not ai_cost:
-        return "—"
-    total = ai_cost.get("total_cost_usd", 0.0)
-    parts = []
-    for key, label in (
-        ("log_agent", "log"),
-        ("onchain_agent", "on-chain"),
-        ("specialist", "specialist"),
-    ):
-        agent = ai_cost.get(key)
-        cost = agent["cost_usd"] if agent else 0.0
-        parts.append(f"{label} ${cost:.4f}")
-    breakdown = "  |  ".join(parts)
-    return f"**${total:.4f}**" + (f"  ({breakdown})" if breakdown else "")
-
-
-def _build_early_return_embed(data: dict) -> discord.Embed:
-    state = _STATE_LABEL.get(data.get("state", ""), data.get("state", "?"))
-    src   = data.get("source_chain", "?")
-    dst   = data.get("destination_chain", "?")
-    reason = data.get("reason", "No reason provided.")
-
-    embed = discord.Embed(
-        title=f"🔍 Investigation — {state}",
-        description=_truncate(reason, 2000),
-        colour=discord.Colour.blurple(),
-    )
-    embed.add_field(name="Order ID", value=f"`{data.get('order_id', '?')}`", inline=False)
-    embed.add_field(name="Route",    value=f"{src} → {dst}",               inline=True)
-    embed.add_field(name="Duration", value=f"{data.get('duration_seconds', '?')}s", inline=True)
-    embed.set_footer(text="Garden RCA Agent  •  no AI cost (early return)")
-    return embed
-
-
-def _build_rca_embed(data: dict) -> discord.Embed:
-    report  = data.get("rca_report") or {}
-    state   = _STATE_LABEL.get(data.get("state", ""), data.get("state", "?"))
-    src     = data.get("source_chain", "?")
-    dst     = data.get("destination_chain", "?")
-
-    severity      = report.get("severity", "medium")
-    confidence    = report.get("confidence", "low")
-    root_cause    = report.get("root_cause", "Unknown")
-    actions       = report.get("remediation_actions", [])
-    components    = report.get("affected_components", [])
-    investigation = report.get("investigation_summary", "")
-    timeline      = report.get("timeline", [])
-    ruled_out     = report.get("hypotheses_ruled_out", [])
-    next_action   = report.get("next_action", "")
-    links         = report.get("links", [])
-
-    colour = _SEVERITY_COLOUR.get(severity, discord.Colour.light_grey())
-
-    embed = discord.Embed(
-        title=f"RCA — {state}  |  severity: {severity.upper()}  ·  confidence: {confidence.upper()}",
-        description=_truncate(root_cause, 2000),
-        colour=colour,
-    )
-    embed.add_field(name="Order ID", value=f"`{data.get('order_id', '?')}`", inline=False)
-    embed.add_field(name="Route",    value=f"{src} → {dst}", inline=True)
-    embed.add_field(name="Duration", value=f"{data.get('duration_seconds', '?')}s", inline=True)
-    embed.add_field(name="AI Cost",  value=_format_cost(data.get("ai_cost")), inline=True)
-
-    # What to do now — most prominent actionable field
-    if next_action:
-        embed.add_field(
-            name="▶ What to do now",
-            value=_truncate(next_action, 1024),
-            inline=False,
-        )
-
-    if investigation:
-        embed.add_field(
-            name="Investigation Summary",
-            value=_truncate(investigation, 1024),
-            inline=False,
-        )
-
-    # Timeline
-    if timeline:
-        lines: list[str] = []
-        for entry in timeline[:5]:
-            if not isinstance(entry, dict):
-                continue
-            ts = entry.get("timestamp", "")
-            ev = entry.get("event", "")
-            if not ev:
-                continue
-            if ts:
-                lines.append(f"`{ts}` — {ev}")
-            else:
-                lines.append(f"• {ev}")
-        if lines:
-            embed.add_field(
-                name="Timeline",
-                value=_truncate("\n".join(lines), 1024),
-                inline=False,
-            )
-
-    if actions:
-        actions = actions[:5]
-        embed.add_field(
-            name="Remediation Actions",
-            value=_truncate("\n".join(f"{i+1}. {a}" for i, a in enumerate(actions)), 1024),
-            inline=False,
-        )
-
-    # Ruled Out
-    if ruled_out:
-        ruled_lines = [f"• {h}" for h in ruled_out[:3]]
-        embed.add_field(
-            name="Ruled Out",
-            value=_truncate("\n".join(ruled_lines), 1024),
-            inline=False,
-        )
-
-    # Key Evidence — LLM-curated log lines with significance
-    evidence_items = report.get("key_log_evidence", [])
-    if evidence_items:
-        evidence_lines = []
-        for ev in evidence_items[:5]:
-            if isinstance(ev, dict):
-                line = ev.get("line", "")
-                sig = ev.get("significance", "")
-                if line:
-                    display_line = line[:120] + "..." if len(line) > 120 else line
-                    entry = f"`{display_line}`"
-                    if sig:
-                        entry += f"\n  _{sig}_"
-                    evidence_lines.append(entry)
-        if evidence_lines:
-            embed.add_field(
-                name="Key Evidence",
-                value=_truncate("\n".join(evidence_lines), 1024),
-                inline=False,
-            )
-
-    # Affected Components (with links if available)
-    if components:
-        code_links = {l.get("label", ""): l.get("url", "")
-                      for l in links if isinstance(l, dict) and l.get("kind") == "code"}
-        rendered = []
-        for c in components:
-            url = code_links.get(c)
-            if not url:
-                # Try prefix match: component is a substring of a link label
-                for label, u in code_links.items():
-                    if c in label or label in c:
-                        url = u
-                        break
-            if url:
-                rendered.append(f"• [{c}]({url})")
-            else:
-                rendered.append(f"• {c}")
-        embed.add_field(
-            name="Affected Components",
-            value=_truncate("\n".join(rendered), 512),
-            inline=False,
-        )
-
-    # Links field (skip tx links already rendered; show order + any remaining)
-    tx_links   = [l for l in links if isinstance(l, dict) and l.get("kind") == "tx"]
-    order_link = next((l for l in links if isinstance(l, dict) and l.get("kind") == "order"), None)
-    link_lines: list[str] = []
-    if order_link:
-        link_lines.append(f"[{order_link.get('label','order')}]({order_link.get('url','')})")
-    for l in tx_links[:6]:
-        link_lines.append(f"[{l.get('label','tx')}]({l.get('url','')})")
-    if link_lines:
-        embed.add_field(
-            name="Links",
-            value=_truncate("  •  ".join(link_lines), 1024),
-            inline=False,
-        )
-
-    embed.set_footer(text="Garden RCA Agent")
-    return embed
-
-
-async def _investigate_with_polling(
-    interaction: discord.Interaction,
-    order_id: str,
-    investigate: bool,
-) -> dict | None:
-    """
-    POST /investigate then poll GET /jobs every 5s until terminal status.
-
-    Returns the raw InvestigateResponse dict on success, None on failure
-    (an error followup will have been sent to the interaction already).
-    """
-    post_url = f"{RCA_AGENT_URL}/investigate/{SERVER_SECRET}"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as http:
-            resp = await http.post(post_url, json={"order_id": order_id, "investigate": investigate})
-            resp.raise_for_status()
-            enqueue = _lenient_json(resp)
-    except httpx.HTTPStatusError as exc:
-        await interaction.followup.send(
-            f"RCA agent returned `{exc.response.status_code}`: {exc.response.text[:500]}"
-        )
-        return None
-    except Exception as exc:
-        logger.exception("Enqueue failed")
-        await interaction.followup.send(f"Failed to enqueue investigation: {exc}")
-        return None
-
-    job_id = enqueue.get("job_id")
-    poll_path = enqueue.get("poll_url", "")
-    if not job_id or not poll_path:
-        await interaction.followup.send(
-            f"Unexpected response from RCA agent: {enqueue}"
-        )
-        return None
-
-    poll_url = f"{RCA_AGENT_URL}{poll_path}"
-    logger.info("Polling job %s for order %s", job_id, order_id)
-
-    deadline = time.monotonic() + 14 * 60  # Discord defer window is 15 min
-    async with httpx.AsyncClient(timeout=30.0) as http:
-        while time.monotonic() < deadline:
-            await asyncio.sleep(5)
-            try:
-                r = await http.get(poll_url)
-                r.raise_for_status()
-                job = _lenient_json(r)
-            except Exception as exc:
-                logger.warning("Poll transient error: %s", exc)
-                continue
-
-            status = job.get("status")
-            if status == "done":
-                return job.get("result")
-            if status == "failed":
-                await interaction.followup.send(
-                    f"Investigation failed: {job.get('error', 'unknown error')}"
-                )
-                return None
-            # still queued or running → keep polling
-
-    await interaction.followup.send(
-        f"Investigation exceeded 14 min; job `{job_id}` may still be running on the server"
-    )
-    return None
 
 
 class RCABot(discord.Client):
@@ -347,19 +83,38 @@ client = RCABot()
     investigate="Run full LLM analysis even for refunded/early-return orders (default: False)",
 )
 async def investigate(interaction: discord.Interaction, order_id: str, investigate: bool = False):
-    await interaction.response.defer(thinking=True)
-    logger.info("Investigating order %s (investigate=%s)", order_id, investigate)
+    """
+    Enqueue an investigation and acknowledge. The RCA agent posts the final
+    result to the configured Discord webhook — the bot does not poll.
+    """
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    logger.info("Enqueuing investigation order=%s (investigate=%s)", order_id, investigate)
 
-    data = await _investigate_with_polling(interaction, order_id, investigate)
-    if data is None:
-        return  # error followup already sent
+    url = f"{RCA_AGENT_URL}/investigate/{SERVER_SECRET}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            resp = await http.post(url, json={"order_id": order_id, "investigate": investigate})
+            resp.raise_for_status()
+            enqueue = _lenient_json(resp)
+    except httpx.HTTPStatusError as exc:
+        await interaction.followup.send(
+            f"RCA agent returned `{exc.response.status_code}`: {exc.response.text[:500]}",
+            ephemeral=True,
+        )
+        return
+    except Exception as exc:
+        logger.exception("Enqueue failed")
+        await interaction.followup.send(
+            f"Failed to enqueue investigation: {exc}",
+            ephemeral=True,
+        )
+        return
 
-    if data.get("early_return"):
-        embed = _build_early_return_embed(data)
-    else:
-        embed = _build_rca_embed(data)
-
-    await interaction.followup.send(embed=embed)
+    job_id = enqueue.get("job_id", "?")
+    await interaction.followup.send(
+        f"Investigation enqueued (`{job_id}`). Result will post to the configured webhook channel.",
+        ephemeral=True,
+    )
 
 
 def _build_explore_embed(data: dict) -> discord.Embed:
