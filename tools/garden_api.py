@@ -110,6 +110,8 @@ def resolve_asset_symbol(
     - token_address matches (or is None for native assets)
     - htlc_address matches
 
+    Treats "primary" as None/placeholder for native assets.
+
     Returns the symbol portion from the asset ID (e.g., "wbtc" from "ethereum:wbtc"),
     or None if not found.
     """
@@ -117,6 +119,10 @@ def resolve_asset_symbol(
     for chain in chains:
         if chain.get("name", "").lower() != chain_name.lower():
             continue
+
+        # Treat "primary" as None (native asset placeholder)
+        token_address = None if token_address == "primary" else token_address
+        htlc_address = None if htlc_address == "primary" else htlc_address
 
         # Normalize addresses for comparison (case-insensitive)
         norm_token = token_address.lower() if token_address else None
