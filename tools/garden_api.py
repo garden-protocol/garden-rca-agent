@@ -96,3 +96,53 @@ def get_abi(schema_name: str) -> list:
     if schema_name not in schemas:
         raise KeyError(f"Schema '{schema_name}' not found. Available: {list(schemas.keys())}")
     return schemas[schema_name]
+
+
+def resolve_asset_symbol(
+    chain_name: str,
+    token_address: str | None = None,
+    htlc_address: str | None = None,
+) -> str | None:
+    """
+    Resolve the token symbol (e.g., 'btc', 'wbtc', 'usdt') by matching addresses.
+
+    Searches v2/chains for an asset on the given chain where:
+    - token_address matches (or is None for native assets)
+    - htlc_address matches
+
+    Returns the symbol portion from the asset ID (e.g., "wbtc" from "ethereum:wbtc"),
+    or None if not found.
+    """
+    chains = get_chains()
+    for chain in chains:
+        if chain.get("name", "").lower() != chain_name.lower():
+            continue
+
+        # Normalize addresses for comparison (case-insensitive)
+        norm_token = token_address.lower() if token_address else None
+        norm_htlc = htlc_address.lower() if htlc_address else None
+
+        # Try native asset first
+        if not token_address:
+            native_asset_id = chain.get("native_asset_id", "")
+            for asset in chain.get("assets", []):
+                if asset.get("id") == native_asset_id:
+                    asset_htlc = asset.get("htlc", {}).get("address", "").lower()
+                    if norm_htlc and asset_htlc == norm_htlc:
+                        if ":" in native_asset_id:
+                            return native_asset_id.split(":", 1)[1]
+
+        # Search all assets for matching addresses
+        for asset in chain.get("assets", []):
+            asset_token = asset.get("token", {}).get("address", "").lower() if asset.get("token") else None
+            asset_htlc = asset.get("htlc", {}).get("address", "").lower()
+
+            if norm_token and asset_token and norm_token == asset_token:
+                if norm_htlc and asset_htlc == norm_htlc:
+                    asset_id = asset.get("id", "")
+                    if ":" in asset_id:
+                        return asset_id.split(":", 1)[1]
+
+        return None
+
+    return None

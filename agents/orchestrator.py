@@ -40,6 +40,7 @@ from tools.orders_api import (
     fetch_fiat_prices,
 )
 from tools.liquidity import check_solver_liquidity, get_solver_address
+from tools.garden_api import resolve_asset_symbol
 from config import settings
 
 
@@ -277,14 +278,25 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
 
         # 4. Solver liquidity check
         if settings.liquidity_url:
-            has_liquidity, shortage_msg = check_solver_liquidity(
-                solver_id=co.solver_id,
-                dest_chain=dst_chain_api,
-                asset=dst.asset,
-                required_amount=co.destination_amount,
+            asset_symbol = resolve_asset_symbol(
+                chain_name=dst_chain_api,
+                token_address=dst.token_address,
+                htlc_address=dst.htlc_address,
             )
-            if not has_liquidity:
-                return _early(shortage_msg)
+            if asset_symbol is None:
+                logger.warning(
+                    "Could not resolve asset symbol for chain %s token=%s htlc=%s",
+                    dst_chain_api, dst.token_address, dst.htlc_address,
+                )
+            else:
+                has_liquidity, shortage_msg = check_solver_liquidity(
+                    solver_id=co.solver_id,
+                    dest_chain=dst_chain_api,
+                    asset=asset_symbol,
+                    required_amount=co.destination_amount,
+                )
+                if not has_liquidity:
+                    return _early(shortage_msg)
 
         # 5. Deadline check — initiate_timestamp vs solver deadline
         deadline_unix = co.additional_data.deadline
