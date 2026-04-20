@@ -197,8 +197,8 @@ class BaseSpecialist(ABC):
                 if solver_id else ""
             )
             tool_hint_lines.append(
-                f"**Log tools** (`search_by_order_id`, `search_by_service`, `query_loki`) — targeted "
-                f"follow-up Loki queries. "
+                f"**Log tools** (`search_by_order_id`, `search_by_service`, `query_signoz`) — targeted "
+                f"follow-up log queries. "
                 f"Always pass start_iso=\"{log_window_start}\" and end_iso=\"{log_window_end}\" on these calls."
                 f"{solver_line} "
                 f"Do NOT re-run bulk retrieval — the first-pass summary is already in your context."
