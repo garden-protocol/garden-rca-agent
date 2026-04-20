@@ -456,12 +456,12 @@ def _build_alert_from_order(
     result = order.result
     co = result.create_order
     src = result.source_swap
+    dst = result.destination_swap
 
     # Decide which chain's service is responsible based on stuck state
     if state == SwapState.REFUNDED:
         # For refunds: investigate the destination chain executor (solver side)
         # since the most common refund cause is solver failing to initiate.
-        dst = result.destination_swap
         chain = dst_chain if not dst.is_initiated else src_chain
         service = "executor"
         alert_type = "refunded"
