@@ -127,15 +127,18 @@ def resolve_asset_symbol(
             native_asset_id = chain.get("native_asset_id", "")
             for asset in chain.get("assets", []):
                 if asset.get("id") == native_asset_id:
-                    asset_htlc = asset.get("htlc", {}).get("address", "").lower()
+                    htlc_obj = asset.get("htlc") or {}
+                    asset_htlc = htlc_obj.get("address", "").lower()
                     if norm_htlc and asset_htlc == norm_htlc:
                         if ":" in native_asset_id:
                             return native_asset_id.split(":", 1)[1]
 
         # Search all assets for matching addresses
         for asset in chain.get("assets", []):
-            asset_token = asset.get("token", {}).get("address", "").lower() if asset.get("token") else None
-            asset_htlc = asset.get("htlc", {}).get("address", "").lower()
+            token_obj = asset.get("token") or {}
+            asset_token = token_obj.get("address", "").lower() if token_obj else None
+            htlc_obj = asset.get("htlc") or {}
+            asset_htlc = htlc_obj.get("address", "").lower()
 
             if norm_token and asset_token and norm_token == asset_token:
                 if norm_htlc and asset_htlc == norm_htlc:
