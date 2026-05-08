@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     # Quote service
     branch_quote: str = "staging"
 
+    # Solver ecosystem branches (chain-agnostic services)
+    branch_solver_engine: str = "staging"
+    branch_solver_comms: str = "staging"
+    branch_solver_agg: str = "staging"
+    branch_solver_daemon: str = "stage"
+
     # Shared library branches
     branch_blockchain: str = "main"
     branch_garden_rs: str = "main"
@@ -400,10 +406,10 @@ class Settings(BaseSettings):
     def gitea_solver_repos(self) -> dict[str, tuple[str, str]]:
         """Gitea repos for the solver ecosystem (chain-agnostic)."""
         return {
-            "solver_engine": ("solver-engine", "staging"),
-            "solver_comms": ("solver-comms", "staging"),
-            "solver_agg": ("solver-agg-v2", "staging"),
-            "solver_daemon": ("solver", "stage"),
+            "solver_engine": ("solver-engine", self.branch_solver_engine),
+            "solver_comms": ("solver-comms", self.branch_solver_comms),
+            "solver_agg": ("solver-agg-v2", self.branch_solver_agg),
+            "solver_daemon": ("solver", self.branch_solver_daemon),
             "quote": ("quote", self.branch_quote),
         }
 
