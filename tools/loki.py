@@ -1,20 +1,28 @@
 """
 Loki HTTP API client and tool definitions for the Log Intelligence Agent.
 
-Two Loki instances:
-  - Primary (LOKI_URL):        infrastructure logs — relayers, watchers, orderbook, etc.
-  - Solver  (LOKI_SOLVER_URL): executor logs — solana-executor, evm-executor, btc-executor, etc.
+Primary infrastructure logs (relayers, watchers, orderbook) are now served by SigNoz.
+See tools/signoz.py for that client.
 
-search_by_order_id queries both and merges results.
-search_by_service routes to the correct instance based on service type.
+This module handles:
+  - Solver Loki (LOKI_SOLVER_URL): executor logs — solana-executor, evm-executor, etc.
+  - Combined tool definitions (SigNoz + solver Loki) exposed to Claude
+  - search_by_order_id: queries both SigNoz (primary) and solver Loki, merges results
+  - search_by_service: routes primary services to SigNoz, solver services to Loki
 """
 import base64
 import httpx
 from datetime import datetime, timezone
 from config import settings
+from tools.signoz import (
+    search_primary_by_order_id,
+    search_primary_by_service,
+    query_signoz,
+    SIGNOZ_TOOL_DEFINITION,
+)
 
 
-# ── Auth helpers ──────────────────────────────────────────────────────────────
+# ── Auth helpers (solver Loki only) ──────────────────────────────────────────
 
 def _make_headers(token: str) -> dict:
     """Build Authorization header, detecting Basic vs Bearer from token content."""
@@ -30,25 +38,8 @@ def _make_headers(token: str) -> dict:
     return headers
 
 
-def _primary_headers() -> dict:
-    if settings.loki_auth_token:
-        return _make_headers(settings.loki_auth_token)
-    if settings.grafana_api_key:
-        creds = base64.b64encode(f"api_key:{settings.grafana_api_key}".encode()).decode()
-        return {"Content-Type": "application/json", "Authorization": f"Basic {creds}"}
-    return {"Content-Type": "application/json"}
-
-
 def _solver_headers() -> dict:
     return _make_headers(settings.loki_solver_auth_token)
-
-
-def _primary_url() -> str:
-    if settings.loki_url:
-        return settings.loki_url
-    if settings.grafana_url:
-        return f"{settings.grafana_url}/api/datasources/proxy/1"
-    raise RuntimeError("No Loki URL configured")
 
 
 def _solver_url() -> str:
@@ -111,22 +102,6 @@ def _query(base_url: str, headers: dict, logql: str, start: datetime, end: datet
         return [f"[LOKI ERROR] {type(e).__name__}: {e}"]
 
 
-def query_loki(logql: str, start: datetime, end: datetime, limit: int = 200) -> list[str]:
-    """
-    Run a raw LogQL query against the primary Loki (infrastructure logs).
-
-    Args:
-        logql: LogQL query string
-        start: Query start time
-        end: Query end time
-        limit: Max log lines to return (default 200)
-
-    Returns:
-        List of log line strings, ordered oldest-first
-    """
-    return _query(_primary_url(), _primary_headers(), logql, start, end, limit)
-
-
 def query_solver_loki(logql: str, start: datetime, end: datetime, limit: int = 200) -> list[str]:
     """
     Run a raw LogQL query against the solver Loki (executor logs).
@@ -144,22 +119,6 @@ def query_solver_loki(logql: str, start: datetime, end: datetime, limit: int = 2
 
 
 # ── Service → container name mappings ─────────────────────────────────────────
-
-# Primary Loki: infrastructure services
-_PRIMARY_SERVICE_MAP: dict[tuple[str, str], str] = {
-    ("relayer", "evm"):      "/evm-relayer-mainnet",
-    ("watcher", "evm"):      "/evm-watcher-mainnet",
-    ("relayer", "solana"):   "/solana-relayer-mainnet",
-    ("watcher", "solana"):   "/solana-watcher-mainnet",
-    ("watcher", "bitcoin"):  "/bitcoin-indexer-v2",
-    ("relayer", "tron"):     "/tron-relayer-mainnet",
-    ("watcher", "tron"):     "/tron-watcher",
-    ("watcher", "starknet"): "/starknet-watcher-mainnet",
-    ("relayer", "starknet"): "/starknet-relayer-mainnet",
-    ("watcher", "spark"):    "/spark-watcher-mainnet",
-    ("watcher", "litecoin"): "/litecoin-services-mainnet",
-    ("watcher", "alpen"):    "/alpen-watcher-mainnet",
-}
 
 # Solver Loki: executor services (label is `container`, not `service_name`)
 _SOLVER_SERVICE_MAP: dict[str, str] = {
@@ -180,12 +139,6 @@ _SOLVER_SERVICE_MAP: dict[str, str] = {
 _SOLVER_SHARED_SERVICES: dict[str, str] = {
     "solver-engine": "solver-engine",
     "solver-comms":  "solver-comms",
-}
-
-# Services on primary Loki that are NOT chain-scoped. `chain`, `network`,
-# and `solver_id` args are ignored for these services.
-_PRIMARY_SHARED_SERVICES: dict[str, str] = {
-    "orderbook": "/orderbook-mainnet",  # also contains quote service logs
 }
 
 
@@ -219,12 +172,8 @@ def search_by_order_id(
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes_back)
 
-    # Query primary Loki (infra logs, exclude explorer-api noise)
-    primary_lines = _query(
-        _primary_url(), _primary_headers(),
-        f'{{job="MAINNET_LOGS", container_name!="/explorer-api"}} |= `{order_id}`',
-        start, end, limit=500,
-    )
+    # Query SigNoz (primary infra logs, exclude explorer-api noise)
+    primary_lines = search_primary_by_order_id(order_id, start, end)
 
     # Query solver Loki (executor logs) if configured
     solver_lines: list[str] = []
@@ -305,14 +254,6 @@ def search_by_service(
             logql += _level_filter_logql(level_filter)
         return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
 
-    # ── Shared primary-Loki services (orderbook, contains quote logs) ─────
-    if service in _PRIMARY_SHARED_SERVICES:
-        svc_name = _PRIMARY_SHARED_SERVICES[service]
-        logql = f'{{service_name="{svc_name}"}}'
-        if level_filter:
-            logql += _level_filter_logql(level_filter)
-        return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
-
     if service == "executor":
         # Route to solver Loki — use solver_id + service_name when available
         svc_name = _SOLVER_SERVICE_MAP.get(chain)
@@ -330,52 +271,14 @@ def search_by_service(
         return _query(_solver_url(), _solver_headers(), logql, start, end, limit=300)
 
     else:
-        # Route to primary Loki
-        container = _PRIMARY_SERVICE_MAP.get((service, chain))
-        if container:
-            logql = f'{{service_name="{container}"}}'
-        else:
-            logql = f'{{job="MAINNET_LOGS"}} |= `{chain}-{service}`'
-        if level_filter:
-            logql += _level_filter_logql(level_filter)
-        return _query(_primary_url(), _primary_headers(), logql, start, end, limit=300)
+        # Route to SigNoz (primary infrastructure logs)
+        return search_primary_by_service(service, chain, start, end, level_filter)
 
 
 # ── Tool definitions for Claude ───────────────────────────────────────────────
 
 LOKI_TOOL_DEFINITIONS = [
-    {
-        "name": "query_loki",
-        "description": (
-            "Run a raw LogQL query against the PRIMARY Loki instance (infrastructure logs: "
-            "relayers, watchers, orderbook, screener, explorer). "
-            "For executor logs use search_by_service with service='executor'. "
-            "Example: '{service_name=\"/evm-relayer-mainnet\"} |= \"error\"'"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "logql": {
-                    "type": "string",
-                    "description": "A valid LogQL query string",
-                },
-                "start_iso": {
-                    "type": "string",
-                    "description": "Start time in ISO 8601 format, e.g. '2026-04-06T17:00:00Z'",
-                },
-                "end_iso": {
-                    "type": "string",
-                    "description": "End time in ISO 8601 format, e.g. '2026-04-06T17:30:00Z'",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max log lines to return (default 200, max 1000)",
-                    "default": 200,
-                },
-            },
-            "required": ["logql", "start_iso", "end_iso"],
-        },
-    },
+    SIGNOZ_TOOL_DEFINITION,
     {
         "name": "search_by_order_id",
         "description": (
@@ -465,8 +368,8 @@ LOKI_TOOL_DEFINITIONS = [
                     "description": (
                         "Log level to filter on: 'error', 'warn', 'info', 'debug'. "
                         "Matches JSON ('level':'error'), logfmt (level=error), and bracketed ([ERROR]) "
-                        "tokens. Case-insensitive. For freeform keyword filtering use `query_loki` "
-                        "with a full LogQL query instead."
+                        "tokens. Case-insensitive. For freeform keyword filtering use `query_signoz` "
+                        "with a full SigNoz filter query instead."
                     ),
                     "default": "",
                 },
@@ -485,11 +388,11 @@ LOKI_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in LOKI_TOOL_DEFINIT
 
 
 def execute_loki_tool(tool_name: str, tool_input: dict) -> str:
-    """Execute a Loki tool call and return result as string."""
-    if tool_name == "query_loki":
+    """Execute a log tool call and return result as string."""
+    if tool_name == "query_signoz":
         start = datetime.fromisoformat(tool_input["start_iso"].replace("Z", "+00:00"))
         end = datetime.fromisoformat(tool_input["end_iso"].replace("Z", "+00:00"))
-        lines = query_loki(tool_input["logql"], start, end, tool_input.get("limit", 200))
+        lines = query_signoz(tool_input["q"], start, end, tool_input.get("limit", 200))
         return "\n".join(lines) if lines else "[No logs found]"
 
     elif tool_name == "search_by_order_id":
