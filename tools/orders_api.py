@@ -72,22 +72,54 @@ def fetch_order(order_id: str) -> OrderApiResponse:
     """
     Fetch full order data from Garden Finance API.
 
-    GET {order_api_base_url}/orders/id/{order_id}
+    GET {order_api_base_url}/v2/orders/{order_id}
 
     Raises:
         httpx.HTTPStatusError: on non-2xx response
         ValueError: if the response cannot be parsed
     """
-    url = f"{settings.order_api_base_url}/orders/id/{order_id}"
+    url = f"{settings.order_api_base_url}/v2/orders/{order_id}"
     logger.info("Fetching order %s from %s", order_id, url)
 
     resp = httpx.get(url, timeout=settings.order_api_timeout_seconds)
     resp.raise_for_status()
 
+    payload = resp.json()
+
+    # The single-order endpoint omits is_blacklisted / strategy_id / user_id / fee.
+    # Enrich from /solver-orders (which carries them) so the blacklist early-return
+    # works. Non-fatal: if the lookup fails or the order isn't listed, defaults apply.
+    result = payload.get("result")
+    if isinstance(result, dict) and "is_blacklisted" not in result:
+        extra = _fetch_solver_order(order_id)
+        if extra:
+            for key in ("is_blacklisted", "strategy_id", "user_id", "fee"):
+                if key in extra and key not in result:
+                    result[key] = extra[key]
+
     try:
-        return OrderApiResponse.model_validate(resp.json())
+        return OrderApiResponse.model_validate(payload)
     except Exception as exc:
         raise ValueError(f"Failed to parse order API response: {exc}") from exc
+
+
+def _fetch_solver_order(order_id: str) -> dict | None:
+    """
+    Look up a single order in the /solver-orders list (matched by order_id).
+    Returns the raw order dict or None. Non-fatal on any error.
+    """
+    if not settings.solver_orders_url:
+        return None
+    try:
+        resp = httpx.get(settings.solver_orders_url, timeout=settings.order_api_timeout_seconds)
+        resp.raise_for_status()
+        orders = resp.json().get("result", [])
+        for order in orders:
+            if order.get("order_id") == order_id:
+                return order
+    except Exception as exc:
+        logger.warning("solver-orders lookup failed for %s: %s", order_id, exc)
+    return None
 
 
 def classify_state(order: OrderApiResponse) -> SwapState:

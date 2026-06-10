@@ -27,34 +27,35 @@
 ```mermaid
 graph TB
     subgraph External["External Triggers"]
-        ALERT[Order Investigation<br/>POST /investigate/{server_secret}]
-        STUDY_TRIGGER[Manual Trigger<br/>POST /study/{chain}]
+        ALERT["Order Investigation<br/>POST /investigate/{server_secret}"]
+        STUDY_TRIGGER["Manual Trigger<br/>POST /study/{chain}"]
     end
 
     subgraph API["FastAPI Server"]
-        MAIN[main.py<br/>Route + Validate]
+        MAIN["main.py<br/>Route + Validate"]
     end
 
     subgraph Pipeline["RCA Pipeline"]
-        ORCH[Orchestrator<br/>agents/orchestrator.py]
-        LOG[Log Intelligence Agent<br/>agents/log_agent.py]
-        SPEC[Chain Specialist<br/>agents/specialists/{chain}.py]
-        ONCHAIN[On-Chain Agent<br/>agents/onchain/{chain}.py]
+        ORCH["Orchestrator<br/>agents/orchestrator.py"]
+        LOG["Log Intelligence Agent<br/>agents/log_agent.py"]
+        SPEC["Chain Specialist<br/>agents/specialists/{chain}.py"]
+        ONCHAIN["On-Chain Agent<br/>agents/onchain/{chain}.py"]
     end
 
     subgraph DataSources["Data Sources"]
-        LOKI[(Loki<br/>Log Storage)]
-        REPO[(Cloned Repos<br/>Local Filesystem)]
-        KNOWLEDGE[(knowledge/{chain}.md<br/>Generated KT Docs)]
+        LOKI[("Loki<br/>Log Storage")]
+        REPO[("Cloned Repos<br/>Local Filesystem")]
+        KNOWLEDGE[("knowledge/{chain}.md<br/>Generated KT Docs")]
+        RPC[("Chain RPC<br/>Live Data")]
     end
 
     subgraph StudyPipeline["Study Mode"]
-        STUDY[Study Agent<br/>study/study_agent.py]
+        STUDY["Study Agent<br/>study/study_agent.py"]
     end
 
     subgraph Output["Output"]
-        REPORT[RCAReport JSON<br/>root_cause · evidence · actions · severity]
-        KT_DOC[knowledge/{chain}.md<br/>Committed to Git]
+        REPORT["RCAReport JSON<br/>root_cause · evidence · actions · severity"]
+        KT_DOC["knowledge/{chain}.md<br/>Committed to Git"]
     end
 
     ALERT --> MAIN

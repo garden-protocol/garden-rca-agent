@@ -1,6 +1,9 @@
 
 .codegraph/
 .env
+data/
 __pycache__/
 *.pyc
 *.pyo
+
+logging_knowledge.md
