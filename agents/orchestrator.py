@@ -41,6 +41,8 @@ from tools.orders_api import (
 )
 from tools.liquidity import check_solver_liquidity, get_solver_address
 from tools.garden_api import resolve_asset_symbol
+from tools import known_issues
+from models.known_issue import KnownIssueMatch
 from config import settings
 
 
@@ -67,6 +69,27 @@ _ONCHAIN_AGENTS = {
 }
 
 
+# ── Blacklist detail formatting ───────────────────────────────────────────────
+
+def _blacklist_suffix(co: "CreateOrder") -> str:
+    """
+    Render a human-readable suffix from blacklist details (flagged_by, when,
+    which address) when available. Returns "" when no details are present.
+    """
+    details = co.additional_data.blacklist_details
+    if details is None:
+        return ""
+    bits: list[str] = []
+    if details.flagged_by:
+        bits.append(f"flagged by {details.flagged_by}")
+    if details.blacklisted_at:
+        bits.append(f"at {details.blacklisted_at.isoformat()}")
+    if details.address:
+        chain = f" on {details.chain}" if details.chain else ""
+        bits.append(f"address {details.address}{chain}")
+    return f" Blacklist: {'; '.join(bits)}." if bits else ""
+
+
 # ── Refund context for LLM pipeline ──────────────────────────────────────────
 
 def _refund_context(
@@ -87,7 +110,7 @@ def _refund_context(
     if src.is_refunded and not dst.is_initiated:
         parts.append("Solver never initiated on destination.")
         if co.additional_data.is_blacklisted:
-            parts.append("Order was blacklisted.")
+            parts.append("Order was blacklisted." + _blacklist_suffix(co))
     elif src.is_refunded and dst.is_initiated and not dst.is_redeemed:
         parts.append("Destination was initiated but never redeemed.")
     elif src.is_refunded and dst.is_redeemed:
@@ -130,7 +153,17 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
     state = classify_state(order)
     logger.info("Order %s classified as: %s", order_id, state.value)
 
-    def _early(reason: str) -> InvestigateResponse:
+    def _early(reason: str, *, persist: bool = True) -> InvestigateResponse:
+        if persist:
+            # Persist the deterministic diagnosis to the knowledge base. Stored for
+            # analytics/visibility but flagged non-short-circuitable (these checks
+            # depend on live state and are re-run every time). Non-fatal on failure.
+            try:
+                known_issues.store.record_deterministic(
+                    order, state, src_chain, dst_chain, reason=reason,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to persist deterministic known issue: %s", exc)
         return InvestigateResponse(
             order_id=order_id,
             state=state,
@@ -138,6 +171,63 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
             destination_chain=dst_chain,
             early_return=True,
             reason=reason,
+            generated_at=datetime.now(timezone.utc),
+            duration_seconds=round(time.monotonic() - started_at, 2),
+        )
+
+    def _known_issue_response(match: KnownIssueMatch) -> InvestigateResponse:
+        """Build an early-return response from a known-issue KB match."""
+        iss = match.issue
+        reason = (
+            f"Known issue (match {match.score:.0%} on {', '.join(match.matched_on) or 'fingerprint'}; "
+            f"first seen {iss.first_seen.isoformat()}, observed {iss.occurrence_count}x). "
+            f"Probable cause: {iss.probable_cause}"
+        )
+        logger.info(
+            "Order %s short-circuited to known issue %s (score=%.2f)",
+            order_id, iss.issue_id, match.score,
+        )
+        return InvestigateResponse(
+            order_id=order_id,
+            state=state,
+            source_chain=src_chain,
+            destination_chain=dst_chain,
+            early_return=True,
+            reason=reason,
+            known_issue=match,
+            generated_at=datetime.now(timezone.utc),
+            duration_seconds=round(time.monotonic() - started_at, 2),
+        )
+
+    def _escalate(alert: Alert) -> InvestigateResponse:
+        """Escalate to the LLM pipeline — but first try a known-issue short-circuit,
+        and afterwards persist the resulting RCA back into the knowledge base."""
+        if settings.known_issue_short_circuit and not force_investigate:
+            try:
+                fp = known_issues.build_fingerprint(order, state, src_chain, dst_chain)
+                match = known_issues.store.match(
+                    fp,
+                    settings.known_issue_match_threshold,
+                    require_short_circuitable=True,
+                )
+                if match:
+                    return _known_issue_response(match)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Known-issue lookup failed: %s", exc)
+
+        rca_report, ai_cost = run(alert)
+        try:
+            known_issues.store.record_rca(order, state, src_chain, dst_chain, rca_report)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to persist RCA known issue: %s", exc)
+        return InvestigateResponse(
+            order_id=order_id,
+            state=state,
+            source_chain=src_chain,
+            destination_chain=dst_chain,
+            early_return=False,
+            rca_report=rca_report,
+            ai_cost=ai_cost,
             generated_at=datetime.now(timezone.utc),
             duration_seconds=round(time.monotonic() - started_at, 2),
         )
@@ -174,7 +264,7 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
         # No specialist / remediation needed, even when investigate=true.
         if co.additional_data.is_blacklisted:
             return _early(
-                f"Order was blacklisted and refunded as expected. "
+                f"Order was blacklisted and refunded as expected.{_blacklist_suffix(co)} "
                 f"{lifetime_str}{refund_context} "
                 f"No remediation needed — blacklist filtering worked correctly."
             )
@@ -191,18 +281,7 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
             f"Order {order_id} has been refunded. {lifetime_str}{refund_context} "
             f"Investigate logs and on-chain data to determine the root cause."
         )
-        rca_report, ai_cost = run(alert)
-        return InvestigateResponse(
-            order_id=order_id,
-            state=state,
-            source_chain=src_chain,
-            destination_chain=dst_chain,
-            early_return=False,
-            rca_report=rca_report,
-            ai_cost=ai_cost,
-            generated_at=datetime.now(timezone.utc),
-            duration_seconds=round(time.monotonic() - started_at, 2),
-        )
+        return _escalate(alert)
 
     # ── No user init (pre-state check) ───────────────────────────────────────
     if not src.is_initiated:
@@ -238,7 +317,10 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
 
         # 1. Blacklist check
         if co.additional_data.is_blacklisted:
-            return _early("Order is blacklisted; solver will not initiate on destination.")
+            return _early(
+                "Order is blacklisted; solver will not initiate on destination."
+                + _blacklist_suffix(co)
+            )
 
         # 2. Filled amount tolerance check — only meaningful once init is confirmed on-chain.
         # If initiate_block_number is "0" the tx hasn't been mined yet; skip the check.
@@ -256,19 +338,18 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
         # 3. Price fluctuation check — compare stored quote prices against current market prices.
         # If either input or output token has moved beyond the threshold since quote time,
         # the solver would have rejected initiating on destination.
-        ad = co.additional_data
-        if ad.input_token_price is not None and ad.output_token_price is not None:
+        if src.asset_price is not None and dst.asset_price is not None:
             try:
                 fiat = fetch_fiat_prices()
-                current_input = fiat.get(f"{co.source_chain}:{co.source_asset}")
-                current_output = fiat.get(f"{co.destination_chain}:{co.destination_asset}")
+                current_input = fiat.get(src.asset)
+                current_output = fiat.get(dst.asset)
                 if current_input and current_output:
-                    input_dev = abs(current_input - ad.input_token_price) / ad.input_token_price * 100
-                    output_dev = abs(current_output - ad.output_token_price) / ad.output_token_price * 100
+                    input_dev = abs(current_input - src.asset_price) / src.asset_price * 100
+                    output_dev = abs(current_output - dst.asset_price) / dst.asset_price * 100
                     if input_dev > settings.price_deviation_tolerance_pct or output_dev > settings.price_deviation_tolerance_pct:
                         return _early(
-                            f"Price fluctuation detected: input token '{co.source_asset}' moved "
-                            f"{input_dev:.1f}%, output token '{co.destination_asset}' moved "
+                            f"Price fluctuation detected: input token '{src.asset}' moved "
+                            f"{input_dev:.1f}%, output token '{dst.asset}' moved "
                             f"{output_dev:.1f}% from quote price (threshold: "
                             f"{settings.price_deviation_tolerance_pct}%); solver likely rejected "
                             f"the swap due to unfavourable price movement."
@@ -427,19 +508,7 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
     # No early return — escalate to full LLM pipeline
     # ═════════════════════════════════════════════════════════════════════════
     alert = _build_alert_from_order(order_id, order, state, src_chain, dst_chain)
-    rca_report, ai_cost = run(alert)
-
-    return InvestigateResponse(
-        order_id=order_id,
-        state=state,
-        source_chain=src_chain,
-        destination_chain=dst_chain,
-        early_return=False,
-        rca_report=rca_report,
-        ai_cost=ai_cost,
-        generated_at=datetime.now(timezone.utc),
-        duration_seconds=round(time.monotonic() - started_at, 2),
-    )
+    return _escalate(alert)
 
 
 def _build_alert_from_order(

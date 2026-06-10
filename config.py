@@ -56,9 +56,6 @@ class Settings(BaseSettings):
     loki_solver_url: str = ""
     loki_solver_auth_token: str = ""
 
-    # Grafana (fallback)
-    grafana_url: str = ""
-    grafana_api_key: str = ""
 
     # Orders API (used by investigate pipeline)
     order_api_base_url: str = "https://api.garden.finance"
@@ -187,12 +184,25 @@ class Settings(BaseSettings):
     filled_amount_tolerance_pct: float = 5.0
 
     # Max % deviation between source and destination token values (price * amount) before skipping
-    # If input_token_price * source_amount vs output_token_price * destination_amount diverges
+    # If source_swap.asset_price * source_amount vs destination_swap.asset_price * destination_amount diverges
     # beyond this threshold, the solver likely rejected the swap due to price fluctuation.
     price_deviation_tolerance_pct: float = 1.0
 
+    # ── Known-issue knowledge base ────────────────────────────────────────────
+    # Path to the persisted known-issue KB (JSON). Empty → <repo>/data/known_issues.json
+    known_issues_path: str = ""
+    # When True, an incoming order matching a known (LLM-derived) issue above the
+    # threshold short-circuits the expensive LLM pipeline and returns the cached RCA.
+    known_issue_short_circuit: bool = True
+    # Minimum weighted similarity [0..1] for a known-issue match to short-circuit.
+    known_issue_match_threshold: float = 0.72
+
     # URL that returns all solvers' available liquidity (no auth, returns JSON list/map)
     liquidity_url: str = ""
+
+    # Blacklist status is enriched from {order_api_base_url}/analytics/metrics/
+    # blacklisted-stats (see tools/orders_api.fetch_blacklist_info) — no extra
+    # config needed; it shares order_api_base_url.
 
     # Per-chain relayer wallet addresses (used in UserRedeemPending balance check)
     relayer_address_bitcoin: str = ""

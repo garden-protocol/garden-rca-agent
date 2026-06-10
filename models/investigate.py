@@ -6,6 +6,7 @@ from enum import Enum
 from pydantic import BaseModel
 
 from models.report import RCAReport
+from models.known_issue import KnownIssueMatch
 
 
 class SwapState(str, Enum):
@@ -55,5 +56,6 @@ class InvestigateResponse(BaseModel):
     reason: str | None = None       # set when early_return is True
     rca_report: RCAReport | None = None  # set when early_return is False and LLM pipeline ran
     ai_cost: AICost | None = None   # token usage and cost for all LLM calls
+    known_issue: KnownIssueMatch | None = None  # set when a known-issue short-circuit fired
     generated_at: datetime
     duration_seconds: float
