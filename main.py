@@ -26,6 +26,7 @@ import study.study_agent as study_agent
 import jobs as job_store
 from jobs import JobStatus
 import discord_webhook
+import slack_webhook
 
 
 logging.basicConfig(
@@ -64,7 +65,10 @@ async def _run_investigation(job_id: str, order_id: str, investigate: bool):
         result = await asyncio.to_thread(orchestrator.investigate, order_id, investigate)
         await job_store.set_done(job_id, result)
         logger.info("Job %s: done order=%s", job_id, order_id)
-        await discord_webhook.post_investigation(result)
+        await asyncio.gather(
+            discord_webhook.post_investigation(result),
+            slack_webhook.post_investigation(result),
+        )
     except Exception as exc:
         logger.exception("Job %s failed for order %s", job_id, order_id)
         await job_store.set_failed(job_id, f"{type(exc).__name__}: {exc}")
