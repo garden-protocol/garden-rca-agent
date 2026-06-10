@@ -69,6 +69,27 @@ _ONCHAIN_AGENTS = {
 }
 
 
+# ── Blacklist detail formatting ───────────────────────────────────────────────
+
+def _blacklist_suffix(co: "CreateOrder") -> str:
+    """
+    Render a human-readable suffix from blacklist details (flagged_by, when,
+    which address) when available. Returns "" when no details are present.
+    """
+    details = co.additional_data.blacklist_details
+    if details is None:
+        return ""
+    bits: list[str] = []
+    if details.flagged_by:
+        bits.append(f"flagged by {details.flagged_by}")
+    if details.blacklisted_at:
+        bits.append(f"at {details.blacklisted_at.isoformat()}")
+    if details.address:
+        chain = f" on {details.chain}" if details.chain else ""
+        bits.append(f"address {details.address}{chain}")
+    return f" Blacklist: {'; '.join(bits)}." if bits else ""
+
+
 # ── Refund context for LLM pipeline ──────────────────────────────────────────
 
 def _refund_context(
@@ -89,7 +110,7 @@ def _refund_context(
     if src.is_refunded and not dst.is_initiated:
         parts.append("Solver never initiated on destination.")
         if co.additional_data.is_blacklisted:
-            parts.append("Order was blacklisted.")
+            parts.append("Order was blacklisted." + _blacklist_suffix(co))
     elif src.is_refunded and dst.is_initiated and not dst.is_redeemed:
         parts.append("Destination was initiated but never redeemed.")
     elif src.is_refunded and dst.is_redeemed:
@@ -243,7 +264,7 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
         # No specialist / remediation needed, even when investigate=true.
         if co.additional_data.is_blacklisted:
             return _early(
-                f"Order was blacklisted and refunded as expected. "
+                f"Order was blacklisted and refunded as expected.{_blacklist_suffix(co)} "
                 f"{lifetime_str}{refund_context} "
                 f"No remediation needed — blacklist filtering worked correctly."
             )
@@ -296,7 +317,10 @@ def investigate(raw_order_id: str, force_investigate: bool = False) -> Investiga
 
         # 1. Blacklist check
         if co.additional_data.is_blacklisted:
-            return _early("Order is blacklisted; solver will not initiate on destination.")
+            return _early(
+                "Order is blacklisted; solver will not initiate on destination."
+                + _blacklist_suffix(co)
+            )
 
         # 2. Filled amount tolerance check — only meaningful once init is confirmed on-chain.
         # If initiate_block_number is "0" the tx hasn't been mined yet; skip the check.

@@ -12,6 +12,21 @@ class BitcoinTimestamps(BaseModel):
     redeem_detected_timestamp: datetime | None = None
 
 
+class BlacklistDetails(BaseModel):
+    """
+    Per-order blacklist info from /analytics/metrics/blacklisted-stats
+    (the `blacklisted_details` object inside each blocked order).
+    """
+    address: str = ""
+    chain: str = ""
+    tag: str | None = None
+    remarks: str | None = None
+    flagged_by: str = ""                 # e.g. "TRM"
+    blacklisted_at: datetime | None = None
+
+    model_config = {"extra": "allow"}
+
+
 class AdditionalData(BaseModel):
     strategy_id: str = ""
     bitcoin_optional_recipient: str = ""
@@ -20,6 +35,7 @@ class AdditionalData(BaseModel):
     src_init_detection_deadline: int | None = None  # UNIX timestamp
     instant_refund_tx_bytes: str = ""
     is_blacklisted: bool | None = False
+    blacklist_details: BlacklistDetails | None = None  # set when is_blacklisted
     integrator: str = ""
     version: str = ""
     bitcoin: BitcoinTimestamps | None = None
@@ -156,8 +172,11 @@ class OrderResult(BaseModel):
     solver_id: str = ""
     integrator: str = ""
     affiliate_fees: list[Any] = []
-    # Present on /solver-orders (and enriched onto /v2/orders/{id}); absent → defaults
+    # Blacklist status — the /v2/orders/{id} endpoint omits this, so it is
+    # enriched separately from /analytics/metrics/blacklisted-stats (see
+    # tools/orders_api.fetch_order). Absent → defaults (not blacklisted).
     is_blacklisted: bool = False
+    blacklist_details: BlacklistDetails | None = None
     strategy_id: str = ""
     user_id: str = ""
     fee: str = ""
@@ -194,6 +213,7 @@ class OrderResult(BaseModel):
                 strategy_id=self.strategy_id,
                 deadline=self.deadline,
                 is_blacklisted=self.is_blacklisted,
+                blacklist_details=self.blacklist_details,
                 integrator=self.integrator,
                 version=self.version,
             ),

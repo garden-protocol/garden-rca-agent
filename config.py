@@ -200,10 +200,9 @@ class Settings(BaseSettings):
     # URL that returns all solvers' available liquidity (no auth, returns JSON list/map)
     liquidity_url: str = ""
 
-    # Solver-orders endpoint. Returns the full order objects (list) including
-    # is_blacklisted / strategy_id / user_id / fee — fields the single-order
-    # /v2/orders/{id} endpoint omits. Used to enrich the blacklist early-return.
-    solver_orders_url: str = ""
+    # Blacklist status is enriched from {order_api_base_url}/analytics/metrics/
+    # blacklisted-stats (see tools/orders_api.fetch_blacklist_info) — no extra
+    # config needed; it shares order_api_base_url.
 
     # Per-chain relayer wallet addresses (used in UserRedeemPending balance check)
     relayer_address_bitcoin: str = ""

@@ -3,6 +3,7 @@ Garden Finance Order API client.
 Fetches full order data and classifies swap state for the investigation pipeline.
 """
 import re
+import time
 import logging
 from datetime import datetime, timezone
 
@@ -86,16 +87,15 @@ def fetch_order(order_id: str) -> OrderApiResponse:
 
     payload = resp.json()
 
-    # The single-order endpoint omits is_blacklisted / strategy_id / user_id / fee.
-    # Enrich from /solver-orders (which carries them) so the blacklist early-return
-    # works. Non-fatal: if the lookup fails or the order isn't listed, defaults apply.
+    # The /v2/orders/{id} endpoint does not carry blacklist status. Enrich it from
+    # /analytics/metrics/blacklisted-stats so the blacklist early-returns work.
+    # Non-fatal: if the lookup fails the order is treated as not-blacklisted.
     result = payload.get("result")
-    if isinstance(result, dict) and "is_blacklisted" not in result:
-        extra = _fetch_solver_order(order_id)
-        if extra:
-            for key in ("is_blacklisted", "strategy_id", "user_id", "fee"):
-                if key in extra and key not in result:
-                    result[key] = extra[key]
+    if isinstance(result, dict) and not result.get("is_blacklisted"):
+        details = fetch_blacklist_info(order_id)
+        result["is_blacklisted"] = details is not None
+        if details:
+            result["blacklist_details"] = details
 
     try:
         return OrderApiResponse.model_validate(payload)
@@ -103,23 +103,66 @@ def fetch_order(order_id: str) -> OrderApiResponse:
         raise ValueError(f"Failed to parse order API response: {exc}") from exc
 
 
-def _fetch_solver_order(order_id: str) -> dict | None:
-    """
-    Look up a single order in the /solver-orders list (matched by order_id).
-    Returns the raw order dict or None. Non-fatal on any error.
-    """
-    if not settings.solver_orders_url:
-        return None
+# ── Blacklist lookup ──────────────────────────────────────────────────────────
+# /analytics/metrics/blacklisted-stats returns ALL blocked orders, so the
+# response is cached briefly and shared across order lookups within a run.
+
+_BLACKLIST_TTL_SECONDS = 60.0
+_blacklist_cache: dict[str, dict] | None = None
+_blacklist_cache_ts: float = 0.0
+
+
+def _parse_blacklist_map(payload: dict) -> dict[str, dict]:
+    """Map order_id → blacklisted_details from a blacklisted-stats payload."""
+    blocked = (payload.get("result") or {}).get("blocked_orders") or []
+    mapping: dict[str, dict] = {}
+    for entry in blocked:
+        if not isinstance(entry, dict):
+            continue
+        oid = entry.get("order_id")
+        if not oid:
+            continue
+        # Prefer the nested details object; fall back to the flat address.
+        details = entry.get("blacklisted_details")
+        if not isinstance(details, dict):
+            details = {"address": entry.get("blacklisted_address", "")}
+        mapping[oid] = details
+    return mapping
+
+
+def _fetch_blacklist_map(force: bool = False) -> dict[str, dict]:
+    """Fetch (and cache for _BLACKLIST_TTL_SECONDS) the order_id → details map."""
+    global _blacklist_cache, _blacklist_cache_ts
+    now = time.monotonic()
+    if (
+        not force
+        and _blacklist_cache is not None
+        and (now - _blacklist_cache_ts) < _BLACKLIST_TTL_SECONDS
+    ):
+        return _blacklist_cache
+
+    url = f"{settings.order_api_base_url}/analytics/metrics/blacklisted-stats"
     try:
-        resp = httpx.get(settings.solver_orders_url, timeout=settings.order_api_timeout_seconds)
+        resp = httpx.get(url, timeout=settings.order_api_timeout_seconds)
         resp.raise_for_status()
-        orders = resp.json().get("result", [])
-        for order in orders:
-            if order.get("order_id") == order_id:
-                return order
+        mapping = _parse_blacklist_map(resp.json())
+        _blacklist_cache = mapping
+        _blacklist_cache_ts = now
+        return mapping
     except Exception as exc:
-        logger.warning("solver-orders lookup failed for %s: %s", order_id, exc)
-    return None
+        logger.warning("blacklisted-stats lookup failed: %s", exc)
+        # Serve a stale cache if we have one; otherwise treat nothing as blacklisted.
+        return _blacklist_cache or {}
+
+
+def fetch_blacklist_info(order_id: str) -> dict | None:
+    """
+    Return the blacklist details dict for an order_id, or None if not blacklisted.
+
+    Source: GET {order_api_base_url}/analytics/metrics/blacklisted-stats
+    The details dict has: address, chain, tag, remarks, flagged_by, blacklisted_at.
+    """
+    return _fetch_blacklist_map().get(order_id)
 
 
 def classify_state(order: OrderApiResponse) -> SwapState:
