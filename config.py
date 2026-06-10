@@ -178,6 +178,10 @@ class Settings(BaseSettings):
     # Leave empty to disable webhook delivery.
     discord_webhook_url: str = ""
 
+    # Slack Incoming Webhook — investigation results are POSTed here when set.
+    # Leave empty to disable. Obtain from https://api.slack.com/messaging/webhooks
+    slack_webhook_url: str = ""
+
     # ── Investigation pipeline ────────────────────────────────────────────────
 
     # Max % deviation between source filled_amount and expected amount before skipping
